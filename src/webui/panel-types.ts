@@ -22,6 +22,12 @@ export interface PanelEntry {
   createdAt: string;
   updatedAt: string;
   recallCount: number;
+  /** 有效期（天）；0 = 永久。 */
+  ttlDays: number;
+  /** 到期时刻；null = 不过期。 */
+  expiresAt: string | null;
+  /** 此刻是否已过期。 */
+  expired: boolean;
 }
 
 export interface TagCount {
@@ -128,6 +134,8 @@ export interface LibrarySnapshot {
   kinds: Array<{ kind: string; label: string; count: number }>;
   tags: TagCount[];
   recent: PanelEntry[];
+  /** 已过期、待整理的条目（只读展示，处理要由模型或人通过工具做）。 */
+  expired: { count: number; items: PanelEntry[] };
   embed: EmbedSummary;
   rhythm: PanelRhythm;
   storeFile: string;

@@ -1,3 +1,14 @@
+## 0.4.0
+
+- **时效性记忆**：`ink_remember` / `ink_amend` 增加可选 `expiresInDays`（0 = 永久，上限 3650）；条目记 `ttlDays` 与 `expiresAt`，按 `ctx.timezone` 算到期日。
+- **新工具 `ink_expired`**（只读）：分页列出已过期、未归档的条目，带逾期天数与 `⏳` 标记；没有过期条目时明确回「没有过期的记忆」。
+- **过期不删除**：过期条目仍可检索与取用，摘要行标「⏳ 已过期」，打分降 0.8（排在新鲜条目之后）。
+- **整理时间报数量**：`writeCron` 到点时若有过期条目，提醒改为「记忆库里有 N 条已经过期，用 ink_expired 看全部」，并给出「续期改 expiresInDays / 不要了用 ink_forget」两条出口；没配 cron 时靠 `ink_stats` 与面板兜底。
+- **续期**：`ink_amend` 给 `expiresInDays` 才重算到期日（0 取消时效），改正文不会顺延有效期。
+- **面板**：记忆库页新增「过期待整理」计数、条目抽屉的「有效期」行、结果行「已过期」标记；`snapshot` 带 `expired: { count, items }`。
+- 环境提示词新增「关于时效」小节与 `{{thepalestink.expired}}` 占位符；`ink_stats` 报「过期待整理：N 条」。
+- 测试：79 个用例（world 22 / search 13 / cron 12 / embedding 11 / maintenance 15 / vector 6）；`_dev/verify.mjs` 94 项。
+
 ## 0.3.0
 
 - **定时提醒**：`writeCron`（5 段 cron，按 `ctx.timezone`）到点推 `ink.reminder.schedule`，可附 `writeCronNote`；同一分钟只推一次。

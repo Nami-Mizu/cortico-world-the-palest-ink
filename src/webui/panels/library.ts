@@ -92,6 +92,12 @@ const panel: WebUiPanel = {
           { k: '写入', v: when(entry.entry.createdAt) },
           { k: '修订', v: when(entry.entry.updatedAt) },
           { k: '取用', v: `${entry.entry.recallCount} 次${entry.lastRecalledAt ? `（最近 ${when(entry.lastRecalledAt)}）` : ''}` },
+          {
+            k: '有效期',
+            v: entry.entry.expiresAt
+              ? `${entry.entry.ttlDays} 天，${when(entry.entry.expiresAt)} 到期${entry.entry.expired ? '（已过期，待整理）' : ''}`
+              : '永久',
+          },
           { k: '已向量化', v: entry.vectorized ? '是' : '否（语义检索找不到它）' },
         ]);
         const text = ui.h('pre', 'mono', entry.text);
@@ -114,7 +120,7 @@ const panel: WebUiPanel = {
     const renderRows = (hits: Array<PanelEntry & { semantic?: boolean }>): void => {
       table.clear('没有匹配的记忆。换个词、去掉标签，或点「看最近」。');
       for (const hit of hits) {
-        const flags = [hit.pinned ? '置顶' : '', hit.archived ? '归档' : '', hit.semantic ? '≈' : ''].filter(Boolean).join(' ');
+        const flags = [hit.pinned ? '置顶' : '', hit.archived ? '归档' : '', hit.expired ? '已过期' : '', hit.semantic ? '≈' : ''].filter(Boolean).join(' ');
         const row = table.addRow([
           hit.id.slice(0, 14),
           hit.text || hit.tags.map((item) => `#${item}`).join(' '),
@@ -165,6 +171,7 @@ const panel: WebUiPanel = {
         ui.stat({ k: '未归档', v: snapshot.counts.live, unit: '条', accent: true }),
         ui.stat({ k: '归档', v: snapshot.counts.archived, unit: '条' }),
         ui.stat({ k: '置顶', v: snapshot.counts.pinned, unit: '条' }),
+        ui.stat({ k: '过期待整理', v: snapshot.expired.count, unit: '条' }),
         ui.stat({ k: '容量上限', v: snapshot.limit, unit: '条' }),
       );
       embedLine.textContent = snapshot.embed.enabled
@@ -173,7 +180,7 @@ const panel: WebUiPanel = {
       embedLine.classList.toggle('bad', snapshot.embed.state === 'error');
       const kinds = snapshot.kinds.map((item) => `${item.label} ${item.count}`).join(' · ');
       const tags = snapshot.tags.length ? snapshot.tags.map((item) => `${item.tag}(${item.count})`).join('、') : '（还没有标签）';
-      note.textContent = `种类：${kinds}｜标签：${tags}｜存档：${snapshot.storeFile}`;
+      note.textContent = `种类：${kinds}｜标签：${tags}｜过期待整理 ${snapshot.expired.count} 条｜存档：${snapshot.storeFile}`;
       renderRows(snapshot.recent);
       if (snapshot.recent.length) {
         msg.textContent = `最近修订的 ${snapshot.recent.length} 条。`;

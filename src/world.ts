@@ -18,7 +18,7 @@ import { INK_EVENTS, type InkEventType } from './events.ts';
 import { planMaintenance, type ArchiveDecision } from './maintenance.ts';
 import { planQuery, searchEntries, type SearchHit } from './search.ts';
 import { MemoryStore } from './store.ts';
-import { KIND_LABELS, MEMORY_KINDS, type MemoryEntry, type MemoryKind } from './types.ts';
+import { KIND_LABELS, MAX_TTL_DAYS, MEMORY_KINDS, isExpired, overdueDays, type MemoryEntry, type MemoryKind } from './types.ts';
 import { clampInt, collapse, estimateTokens, nowIso, truncate } from './util.ts';
 import { VectorStore, describeEmbedTarget } from './vector.ts';
 
@@ -76,7 +76,8 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     name: 'ink_remember',
     description:
       '把一条值得长期记住的事写进记忆库，返回条目 id。正文用一句到几句话写清「谁、什么时候、发生了什么、为什么重要」；不要写寒暄、不要写自己刚读过的原文。' +
-      '标签选稳定的名词（人名、项目、主题），重要度 0–5：0 = 随手记，3 = 以后会反复用到，5 = 长期设定。同一件事已经记过时用 ink_amend 改，不要重复写。',
+      '标签选稳定的名词（人名、项目、主题），重要度 0–5：0 = 随手记，3 = 以后会反复用到，5 = 长期设定。同一件事已经记过时用 ink_amend 改，不要重复写。' +
+      '只是暂时有效的（行程、临时安排、会变的偏好）给 expiresInDays 标个大概天数；到期会提醒你决定续期还是归档。',
     tags: ['write'],
     parameters: {
       type: 'object',
@@ -87,6 +88,12 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
         source: { type: 'string', description: '来源：哪次对话、哪份文件、谁说的。80 字以内。' },
         importance: { type: 'integer', minimum: 0, maximum: 5, description: '重要度 0–5，缺省读配置 defaultImportance（默认 2）。' },
         pinned: { type: 'boolean', description: '置顶。置顶的条目不会被容量上限淘汰，适合长期设定。' },
+        expiresInDays: {
+          type: 'integer',
+          minimum: 0,
+          maximum: MAX_TTL_DAYS,
+          description: '大概有效多少天；0 或省略 = 不过期。到期不会自动删，会在整理时间提醒你处理。',
+        },
       },
       required: ['text'],
       additionalProperties: false,
@@ -131,7 +138,7 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     name: 'ink_amend',
     description:
       '按 id 修订一条记忆：给哪个字段就改哪个，没给的保持原样；改完更新修订时间。正文整体替换，不做增量拼接。' +
-      '只改一个细节时也要把完整正文写进来。找不到 id 时先用 ink_search 确认。',
+      '只改一个细节时也要把完整正文写进来。找不到 id 时先用 ink_search 确认。给 expiresInDays 可以改有效期（续期或取消时效）。',
     tags: ['write'],
     parameters: {
       type: 'object',
@@ -143,6 +150,12 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
         source: { type: 'string', description: '新的来源说明，80 字以内。' },
         importance: { type: 'integer', minimum: 0, maximum: 5, description: '新的重要度 0–5。' },
         pinned: { type: 'boolean', description: '是否置顶。' },
+        expiresInDays: {
+          type: 'integer',
+          minimum: 0,
+          maximum: MAX_TTL_DAYS,
+          description: '改有效期：从今天起再有效多少天；0 = 取消时效（永久）。只改正文不会重置到期时间。',
+        },
       },
       required: ['id'],
       additionalProperties: false,
@@ -163,6 +176,22 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
         purge: { type: 'boolean', description: 'true = 物理删除（需配置允许）；缺省 false = 归档。' },
       },
       required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'ink_expired',
+    description:
+      '列出已经过期、但还没处理的记忆（按到期时间从早到晚），返回 id、摘要、到期日与逾期天数。' +
+      '只在「整理时间」的提醒里看到过期数量时用它看全部：决定留下就用 ink_amend 改 expiresInDays 续期（0 = 永久），不要了就用 ink_forget 归档。',
+    tags: ['read'],
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: '本次看几条，缺省读配置 searchLimit（默认 8）。' },
+        offset: { type: 'integer', minimum: 0, maximum: 10000, description: '跳过前面几条，用来翻页。' },
+      },
+      required: [],
       additionalProperties: false,
     },
   },
@@ -283,12 +312,13 @@ export class ThePalestInkWorld implements World {
       ink_recall: (args, ctx) => this.recall(args, ctx),
       ink_amend: (args, ctx) => this.amend(args, ctx),
       ink_forget: (args, ctx) => this.forget(args, ctx),
+      ink_expired: (args, ctx) => this.expired(args, ctx),
       ink_list: (args, ctx) => this.listRecent(args, ctx),
       ink_stats: (args, ctx) => this.stats(args, ctx),
     };
   }
 
-  /** 环境提示词的变量：条目数、标签榜、容量上限、语义状态。 */
+  /** 环境提示词的变量：条目数、标签榜、容量上限、语义状态、过期待整理数。 */
   envPromptVars(): Record<string, string> {
     this.syncConfig();
     const counts = this.store.counts();
@@ -299,6 +329,7 @@ export class ThePalestInkWorld implements World {
       'thepalestink.maxEntries': String(this.store.limit()),
       'thepalestink.topTags': tags.length ? tags.map(({ tag, count }) => `${tag}(${count})`).join('、') : '（还没有标签）',
       'thepalestink.semantic': this.semanticLine(),
+      'thepalestink.expired': String(this.store.expiredCount(this.now())),
     };
   }
 
@@ -337,6 +368,7 @@ export class ThePalestInkWorld implements World {
             { name: 'thepalestink.maxEntries', description: '未归档条目的容量上限。' },
             { name: 'thepalestink.topTags', description: '出现最多的五个标签。' },
             { name: 'thepalestink.semantic', description: '语义检索此刻是开着还是关着。' },
+            { name: 'thepalestink.expired', description: '已过期、还没整理的条目数。' },
           ],
         },
       ],
@@ -446,12 +478,22 @@ export class ThePalestInkWorld implements World {
     const key = `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}T${pad2(parts.hour)}:${pad2(parts.minute)}`;
     if (key === this.lastCronKey) return;
     this.lastCronKey = key;
-    const lines = [
-      `到点了（${describeCron(spec)}，cron「${expr}」）。花一分钟回顾这段时间：对方说过的偏好、定下来的事、还没做完的待办，有没有值得留下的。`,
-    ];
+    const expiredCount = this.store.expiredCount(now);
+    const lines = expiredCount
+      ? [
+          `到点了（${describeCron(spec)}，cron「${expr}」）。记忆库里有 ${expiredCount} 条已经过期：用 ink_expired 看全部。` +
+            '决定留下就用 ink_amend 改 expiresInDays 续期（0 = 永久），不要了就用 ink_forget 归档；别只把结论说给我听，库里的条目才算数。',
+        ]
+      : [
+          `到点了（${describeCron(spec)}，cron「${expr}」）。花一分钟回顾这段时间：对方说过的偏好、定下来的事、还没做完的待办，有没有值得留下的。`,
+        ];
     const note = this.opts.cfg.writeCronNote.trim();
     if (note) lines.push(note);
-    lines.push('写之前先 ink_search 查重；重复的用 ink_amend 改。一次写 1–3 条就够，没有值得写的就不写。');
+    lines.push(
+      expiredCount
+        ? '整理完再顺手回顾一下这段时间有没有新的值得写的；写之前先 ink_search 查重。'
+        : '写之前先 ink_search 查重；重复的用 ink_amend 改。一次写 1–3 条就够，没有值得写的就不写。',
+    );
     const text = lines.join('\n');
     this.lastReminder = { kind: 'schedule', at: nowIso(this.opts.timezone, now), text };
     await this.emit(INK_EVENTS.scheduleReminder, text);
@@ -550,10 +592,14 @@ export class ThePalestInkWorld implements World {
         importance: args.importance === undefined ? undefined : clampInt(args.importance, 0, 5, this.opts.cfg.defaultImportance),
         pinned: args.pinned === true,
         defaultImportance: this.opts.cfg.defaultImportance,
+        expiresInDays: args.expiresInDays === undefined ? undefined : clampInt(args.expiresInDays, 0, MAX_TTL_DAYS, 0),
       });
       const { entry, evicted } = result;
       const lines = [`已记下 ${entry.id}（${KIND_LABELS[entry.kind]}，重要度 ${entry.importance}）：「${truncate(entry.text, PREVIEW_CHARS)}」`];
       if (entry.tags.length) lines.push(`标签：#${entry.tags.join(' #')}`);
+      if (entry.ttlDays > 0 && entry.expiresAt) {
+        lines.push(`有效期 ${entry.ttlDays} 天，${entry.expiresAt.slice(0, 10)} 到期（不会自动删，到整理时间会提醒你处理）。`);
+      }
       if (evicted.length) lines.push(`容量到顶，已把 ${evicted.length} 条最久没被取用的记忆移入归档：${evicted.map((item) => item.id).join('、')}。`);
       await this.emit(
         INK_EVENTS.added,
@@ -593,6 +639,9 @@ export class ThePalestInkWorld implements World {
         ? `找到 ${hits.length} 条（关键词：${query}${semantic ? '，含语义' : ''}）：`
         : `按最近修订列出 ${hits.length} 条：`;
       const lines = [head, ...hits.map((hit, index) => this.entryLine(index + 1, hit.entry))];
+      if (hits.some((hit) => hit.expired)) {
+        lines.push('（带「⏳ 已过期」的内容可能已经不准：仍然可以读，但别直接当现状用；确定还成立就用 ink_amend 续期，不成立就改正文或 ink_forget 归档。）');
+      }
       if (degraded) lines.push(`（语义检索这次没连上：${degraded}；以上按字面匹配。）`);
       else if (semantic) lines.push('（带「≈」的行同时命中语义；分数只用于排序，不必向用户报。）');
       lines.push('要全文用 ink_recall（带上面那个 id）。');
@@ -620,15 +669,19 @@ export class ThePalestInkWorld implements World {
         ...(args.source !== undefined ? { source: this.readSource(args.source) } : {}),
         ...(args.importance !== undefined ? { importance: clampInt(args.importance, 0, 5, this.opts.cfg.defaultImportance) } : {}),
         ...(args.pinned !== undefined ? { pinned: args.pinned === true } : {}),
+        ...(args.expiresInDays !== undefined ? { expiresInDays: clampInt(args.expiresInDays, 0, MAX_TTL_DAYS, 0) } : {}),
       };
       if (!Object.keys(patch).length) {
-        throw new Error('没有给要改的字段。至少给 text、tags、kind、importance、pinned、source 里的一个。');
+        throw new Error('没有给要改的字段。至少给 text、tags、kind、importance、pinned、source、expiresInDays 里的一个。');
       }
       const entry = this.store.update(id, patch);
       if (!entry) return this.notFound(id);
       await this.emit(INK_EVENTS.amended, `修订记忆 ${entry.id}：「${truncate(entry.text, EVENT_PREVIEW_CHARS)}」`);
       void this.indexEntry(entry);
-      return `已修订 ${entry.id}（${KIND_LABELS[entry.kind]}，重要度 ${entry.importance}）：「${truncate(entry.text, PREVIEW_CHARS)}」`;
+      const ttl = entry.ttlDays > 0 && entry.expiresAt
+        ? `有效期 ${entry.ttlDays} 天，${entry.expiresAt.slice(0, 10)} 到期。`
+        : '不设时效（永久）。';
+      return `已修订 ${entry.id}（${KIND_LABELS[entry.kind]}，重要度 ${entry.importance}）：「${truncate(entry.text, PREVIEW_CHARS)}」${ttl}`;
     });
   }
 
@@ -654,6 +707,37 @@ export class ThePalestInkWorld implements World {
       if (!entry) return this.notFound(id);
       await this.emit(INK_EVENTS.archived, `归档记忆 ${entry.id}${reason ? `（${truncate(reason, EVENT_PREVIEW_CHARS)}）` : ''}`);
       return `已归档 ${entry.id}${reason ? `（${reason}）` : ''}。它不再出现在默认检索与 ink_list 里，但还在存档；ink_recall 仍能读到。`;
+    });
+  }
+
+  /** 过期清单：只读，用来在「整理时间」一次性看全部。 */
+  private async expired(args: Record<string, unknown>, _ctx: ToolCallContext): Promise<string | ToolOutcome> {
+    return this.guard(async () => {
+      const now = this.now();
+      const all = this.store.expired(now);
+      if (!all.length) {
+        return '没有过期的记忆。写过时用 ink_remember 的 expiresInDays 标注；到期后会在整理时间提醒你处理。';
+      }
+      const limit = clampInt(args.limit, 1, 50, this.readLimit(undefined));
+      const offset = clampInt(args.offset, 0, 10000, 0);
+      const page = all.slice(offset, offset + limit);
+      const head =
+        offset > 0 || page.length < all.length
+          ? `过期未整理：共 ${all.length} 条，这里是第 ${offset + 1}–${offset + page.length} 条（按到期时间从早到晚）：`
+          : `过期未整理：共 ${all.length} 条（按到期时间从早到晚）：`;
+      const lines = [head];
+      page.forEach((entry, index) => {
+        const days = overdueDays(entry, now);
+        const tags = entry.tags.length ? `｜#${entry.tags.join(' #')}` : '';
+        lines.push(
+          `${offset + index + 1}. ${entry.id} ⏳ ${(entry.expiresAt ?? '').slice(0, 10)} 到期（逾期 ${days} 天）｜重要度 ${entry.importance}${tags}｜「${truncate(entry.text, PREVIEW_CHARS)}」`,
+        );
+      });
+      if (offset + page.length < all.length) {
+        lines.push(`还有 ${all.length - offset - page.length} 条，用 offset=${offset + page.length} 接着看。`);
+      }
+      lines.push('决定留就 ink_amend 改 expiresInDays 续期（0 = 永久）；不要了就 ink_forget 归档；拿不准先 ink_recall 看全文。');
+      return lines.join('\n');
     });
   }
 
@@ -685,6 +769,7 @@ export class ThePalestInkWorld implements World {
       const kindLine = MEMORY_KINDS.map((kind) => `${KIND_LABELS[kind]} ${byKind[kind]}`).join(' · ');
       const lines = [
         `未归档 ${counts.live} 条 / 归档 ${counts.archived} 条 / 置顶 ${counts.pinned} 条（上限 ${this.store.limit()} 条）`,
+        `过期待整理：${this.store.expiredCount(this.now())} 条`,
         `种类：${kindLine}`,
         `标签榜：${tags.length ? tags.map(({ tag, count }) => `${tag}(${count})`).join('、') : '（空）'}`,
         `最常取用：${recalled.length ? recalled.map((entry) => `${entry.id}（${entry.recallCount} 次）`).join('、') : '（还没有）'}`,
@@ -953,6 +1038,7 @@ export class ThePalestInkWorld implements World {
   }
 
   private librarySnapshot(): unknown {
+    const now = this.now();
     const counts = this.store.counts();
     const byKind = this.store.byKind();
     const recent = this.store
@@ -967,6 +1053,10 @@ export class ThePalestInkWorld implements World {
       kinds: MEMORY_KINDS.map((kind) => ({ kind, label: KIND_LABELS[kind], count: byKind[kind] })),
       tags: this.store.topTags(12),
       recent,
+      expired: {
+        count: this.store.expiredCount(now),
+        items: this.store.expired(now).slice(0, 5).map((entry) => this.panelEntry(entry)),
+      },
       embed: this.embedSummary(),
       rhythm: this.rhythmSummary(),
       storeFile: this.store.file,
@@ -1076,6 +1166,9 @@ export class ThePalestInkWorld implements World {
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
       recallCount: entry.recallCount,
+      ttlDays: entry.ttlDays,
+      expiresAt: entry.expiresAt,
+      expired: isExpired(entry, this.now()),
     };
   }
 
@@ -1260,7 +1353,9 @@ export class ThePalestInkWorld implements World {
   }
 
   private entryLine(index: number, entry: MemoryEntry): string {
+    const expired = isExpired(entry, this.now());
     const flags = [KIND_LABELS[entry.kind], `重要度 ${entry.importance}`];
+    if (expired) flags.push('⏳ 已过期');
     if (entry.pinned) flags.push('置顶');
     if (entry.archived) flags.push('已归档');
     const tags = entry.tags.length ? ` · #${entry.tags.join(' #')}` : '';
@@ -1268,12 +1363,19 @@ export class ThePalestInkWorld implements World {
   }
 
   private entryBlock(entry: MemoryEntry): string {
+    const expired = isExpired(entry, this.now());
     const flags = [KIND_LABELS[entry.kind], `重要度 ${entry.importance}`];
+    if (expired) flags.push('⏳ 已过期，待整理');
     if (entry.pinned) flags.push('置顶');
     if (entry.archived) flags.push(`已归档：${entry.archiveReason ?? '未写原因'}`);
     const lines = [`【${entry.id}】${flags.join(' · ')}`, `正文：${entry.text}`];
     if (entry.tags.length) lines.push(`标签：#${entry.tags.join(' #')}`);
     if (entry.source) lines.push(`来源：${entry.source}`);
+    lines.push(
+      entry.ttlDays > 0 && entry.expiresAt
+        ? `有效期 ${entry.ttlDays} 天（${entry.expiresAt.slice(0, 10)} 到期）。`
+        : '不设时效（永久）。',
+    );
     lines.push(
       `写入 ${entry.createdAt}；修订 ${entry.updatedAt}；取用 ${entry.recallCount} 次${entry.lastRecalledAt ? `（最近 ${entry.lastRecalledAt}）` : ''}。`,
     );

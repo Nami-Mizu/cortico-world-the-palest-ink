@@ -130,7 +130,7 @@ function tempDir() {
   const tools = world.tools();
   const byName = (name) => tools.find((tool) => tool.name === name);
 
-  check('工具数', tools.length === 7, `count=${tools.length}`);
+  check('工具数', tools.length === 8, `count=${tools.length}`);
   check('工具前缀', tools.every((tool) => /^ink_/.test(tool.name)));
   check('工具都有 handler', tools.every((tool) => typeof tool.handler === 'function'));
 
@@ -180,14 +180,14 @@ function tempDir() {
   const vars = world.envPromptVars();
   check(
     'envPromptVars 键',
-    ['thepalestink.count', 'thepalestink.archived', 'thepalestink.maxEntries', 'thepalestink.topTags', 'thepalestink.semantic'].every(
+    ['thepalestink.count', 'thepalestink.archived', 'thepalestink.maxEntries', 'thepalestink.topTags', 'thepalestink.semantic', 'thepalestink.expired'].every(
       (key) => key in vars,
     ),
     JSON.stringify(vars),
   );
 
   const docs = world.webUi().promptDocs ?? [];
-  check('promptDocs 五个变量', docs[0]?.vars?.length === 5, JSON.stringify(docs[0]?.vars));
+  check('promptDocs 六个变量', docs[0]?.vars?.length === 6, JSON.stringify(docs[0]?.vars));
   check('配置文件绝对路径', docs[0]?.path?.endsWith('ENV_PROMPT.md') === true, docs[0]?.path);
 
   // 配置热改：先写两条活的，再把上限改小；下一次工具调用立刻淘汰。
@@ -202,6 +202,44 @@ function tempDir() {
 
   await world.stop();
   check('无事件推送失败', warnings.length === 0, warnings.join(' | '));
+}
+
+// ---------------------------------------------------------------- 时效性记忆
+{
+  const dir = tempDir();
+  const events = [];
+  const host = {
+    pushEvent: async (event) => {
+      events.push(event);
+      return { ...event, cursor: events.length };
+    },
+    log: { warn: () => {} },
+  };
+  const clock = new Date();
+  const cfg = { ...INK_DEFAULTS };
+  const world = new ThePalestInkWorld({ cfg, timezone: 'Asia/Shanghai', dataDir: dir, now: () => clock });
+  const byName = (name) => world.tools().find((tool) => tool.name === name);
+  await world.start(host);
+
+  const remembered = await byName('ink_remember').handler(
+    { text: '周末去旧书店取预订的画册。', tags: ['旧书店'], expiresInDays: 1 },
+    {},
+  );
+  const id = String(remembered).match(/mem_[a-z0-9]+/)?.[0] ?? '';
+  check('时效回执写明天数', String(remembered).includes('有效期 1 天'), String(remembered));
+  check('未过期时清单为空', String(await byName('ink_expired').handler({}, {})).includes('没有过期的记忆'));
+
+  clock.setTime(Date.now() + 3 * 86_400_000);
+  const listedExpired = await byName('ink_expired').handler({}, {});
+  check('过期后列得出', String(listedExpired).includes(id) && String(listedExpired).includes('⏳'), String(listedExpired));
+  const expiredSearch = await byName('ink_search').handler({ query: '旧书店' }, {});
+  check('过期仍可搜到并标记', String(expiredSearch).includes('⏳ 已过期'), String(expiredSearch));
+  check('stats 报过期待整理', String(await byName('ink_stats').handler({}, {})).includes('过期待整理：1 条'));
+
+  const renewed = await byName('ink_amend').handler({ id, expiresInDays: 30 }, {});
+  check('amend 能续期', String(renewed).includes('有效期 30 天'), String(renewed));
+  check('续期后不再过期', String(await byName('ink_expired').handler({}, {})).includes('没有过期的记忆'));
+  await world.stop();
 }
 
 // ---------------------------------------------------------------- 向量 / 嵌入 / 语义检索

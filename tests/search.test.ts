@@ -14,6 +14,8 @@ const BASE: MemoryEntry = {
   pinned: false,
   archived: false,
   recallCount: 0,
+  ttlDays: 0,
+  expiresAt: null,
 };
 
 function entry(overrides: Partial<MemoryEntry>): MemoryEntry {

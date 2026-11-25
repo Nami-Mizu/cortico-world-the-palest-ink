@@ -48,6 +48,33 @@ export interface MemoryEntry {
   /** 被 ink_recall 取用的次数。 */
   recallCount: number;
   lastRecalledAt?: string;
+  /** 大概有效多少天；0 = 永久。写入或改期时定下，改正文不会重置。 */
+  ttlDays: number;
+  /** 到期时刻（ISO 8601）；null = 不过期。到点后仍可检索，但会被标「已过期」并略降权。 */
+  expiresAt: string | null;
+}
+
+/** 一条记忆的有效期上限（天）；0 表示不过期。 */
+export const MAX_TTL_DAYS = 3650;
+
+/** 一天有多少毫秒。 */
+const DAY_MS = 86_400_000;
+
+/** 这条记忆在 `now` 时刻是否已过期；没有到期时间的永远不过期。 */
+export function isExpired(entry: Pick<MemoryEntry, 'expiresAt'>, now: Date | number): boolean {
+  if (!entry.expiresAt) return false;
+  const at = Date.parse(entry.expiresAt);
+  if (!Number.isFinite(at)) return false;
+  return at <= (typeof now === 'number' ? now : now.getTime());
+}
+
+/** 过期多少天（向下取整）；没过期为 0。 */
+export function overdueDays(entry: Pick<MemoryEntry, 'expiresAt'>, now: Date | number): number {
+  if (!entry.expiresAt) return 0;
+  const at = Date.parse(entry.expiresAt);
+  if (!Number.isFinite(at)) return 0;
+  const ms = (typeof now === 'number' ? now : now.getTime()) - at;
+  return ms > 0 ? Math.floor(ms / DAY_MS) : 0;
 }
 
 /** 存档文件的顶层结构。 */

@@ -3,7 +3,7 @@
 - `cortico.api` 是 6（world 契约版本）。宿主升契约时先跑 `pnpm check:extension <本包目录>` 看它打印的版本。
 - 改了工具、事件或 `src/ENV_PROMPT.md`，要重跑 `pnpm describe:extension <本包目录>`，否则 `describe.json` 与代码不一致（check 会报）。本机没有 pnpm 时用 `node _dev/gen-describe.mjs` 重生成。
 - World id 固定 `thepalestink`（全小写、无连字符：WebUI 页 id 是 `world:thepalestink`，协议只接受小写字母数字与 `-`；事件 type 段内也不许连字符）。工具前缀固定 `ink_`，配置路径因此是 `worlds.thepalestink.*`。
-- 七个工具：`ink_remember` / `ink_search` / `ink_recall` / `ink_amend` / `ink_forget` / `ink_list` / `ink_stats`。面板两个页签：`library`（记忆库，只读）与 `embedding`（嵌入配置）。
+- 八个工具：`ink_remember` / `ink_search` / `ink_recall` / `ink_amend` / `ink_forget` / `ink_expired` / `ink_list` / `ink_stats`。面板两个页签：`library`（记忆库，只读）与 `embedding`（嵌入配置）。
 - 数据两份：`<dataDir>/thepalestink/entries.json`（`MEMORY_SCHEMA = 1`，删它等于清空记忆库）与 `<dataDir>/thepalestink/vectors.json`（`VECTOR_SCHEMA = 1`，删它只丢向量、不丢正文）。schema 升级要写迁移，不要静默丢弃旧字段。
 - 写盘都是 `.tmp` + rename；坏档改名成 `*.broken-<时间戳>` 后空库继续，`store.recovery()` / `vectors.recovery()` 记着备份路径。
 - 容量策略在 `MemoryStore.add()` → `enforceLimit()`：只数**未归档**条目，超限按 `lastRecalledAt ?? updatedAt` 最旧优先淘汰到归档（`archived: true` + `archiveReason`），`pinned` 不淘汰。`_dev/verify.mjs` 里有置顶保护与热改上限的用例，改策略先跑它。
@@ -18,7 +18,7 @@
 - 换模型 / 换地址 / 改维度时 `vectors.reset()` 整仓作废——向量跟模型绑定，混用等于乱排序。`backfill()` 只补缺的，单次上限 200 条（启动时），面板「重建向量」才不限量。
 - `ink_forget` 默认只归档；`purge: true` 必须 `worlds.thepalestink.hardDeleteOnForget === true` 才接受，否则回失败回执（`{ failed: true }`）。这是有意的双闸，别为了顺手拆掉。
 - 配置全部 `x-hot`：`syncConfig()` 在每次工具调用前跑，`maxEntries` 改小会**立刻**淘汰并推 `ink.memory.evicted`。
-- 环境提示词在 `src/ENV_PROMPT.md`，占位符 `{{thepalestink.count}}` / `{{thepalestink.archived}}` / `{{thepalestink.maxEntries}}` / `{{thepalestink.topTags}}` / `{{thepalestink.semantic}}` 由 `envPromptVars()` 提供。改占位符名要两边一起改。
+- 环境提示词在 `src/ENV_PROMPT.md`，占位符 `{{thepalestink.count}}` / `{{thepalestink.archived}}` / `{{thepalestink.maxEntries}}` / `{{thepalestink.topTags}}` / `{{thepalestink.semantic}}` / `{{thepalestink.expired}}` 由 `envPromptVars()` 提供。改占位符名要两边一起改。
 - 面板：服务端在 `src/world.ts` 的 `invoke()`（`library` / `embedding` 各一个 switch），客户端在 `src/webui/panels/*.ts`，打包入口 `src/webui/client.ts` → `dist/webui.js`（manifest 的 `cortico.webUiClient`）。客户端只能 `import type`，不能 import 服务端模块；面板返回统一 `{ok,data}|{ok:false,error}`，别抛异常穿透。
 - 面板加方法要改两处：`invoke()` 的 switch 与 `panels` 声明里的 `getMethods`（省略 `getMethods` 就只接受 POST）。
 - 改完面板必须 `pnpm build:webui`（或 `node node_modules/esbuild/bin/esbuild src/webui/client.ts --bundle --format=esm --target=es2022 --platform=browser --outfile=dist/webui.js`），否则页面加载的是旧 bundle。
@@ -36,15 +36,26 @@
 - `maintenanceIntervalMinutes` 节流 `runMaintenance('timer')`；启动时跑一次 `runMaintenance('start')`（关机期间也该过期）；面板没有手动触发按钮，要手动跑就写脚本构造 world 调公开的 `runMaintenance('manual')`。
 - 改这两块之后先跑 `node _dev/verify.mjs`（有 cron/上下文/交接/归档的用例），再跑 vitest 的 `cron.test.ts` / `maintenance.test.ts`。
 
+## 时效性记忆
+
+- `MemoryEntry` 有两个新字段：`ttlDays`（0 = 永久）与 `expiresAt`（`string | null`）。`MAX_TTL_DAYS = 3650`；`isExpired()` / `overdueDays()` 在 `src/types.ts` 里是纯函数，拿传入的时钟比 `expiresAt`。
+- 写入与修订都用可选参数 `expiresInDays`：`store.add()` 用**真实时钟**（`new Date()`，不是测试注入的 `world.now()`）算到期日；`store.update()` 只在传了 `expiresInDays` 时重算，`0` 是取消时效，**改正文不会顺延有效期**。`coerceEntry()` 会给旧档补 `ttlDays: 0`，`ttlDays > 0` 而缺 `expiresAt` 时从 `createdAt` 推。
+- 过期**不是删除**：`store.expired(now)` 只列未归档、按 `expiresAt` 升序；检索照常命中，`SearchHit.expired = true` 并扣 `EXPIRED_PENALTY = 0.8`（排在新鲜条目之后，但不隐藏）。别改成「过期就不返回」——用户选的是「标出来 + 略降权」。
+- `ink_expired` 是只读工具（`limit` 1–50、`offset` 0–10000），先给总数与逾期天数，没条目时回「没有过期的记忆」。处理出口只有两个：`ink_amend` 改 `expiresInDays` 续期，`ink_forget` 归档；**不要**替模型自动续期或自动归档。
+- 定时提醒到点时先看 `store.expiredCount(now)`：有过期条目就把文案换成「N 条已经过期，用 ink_expired 看全部……」；没有才说「花一分钟回顾」。没配 `writeCron` 就不主动弹过期，靠 `ink_stats` 与面板兜底。
+- 面板：`snapshot.expired = { count, items（前 5 条） }`，条目抽屉有「有效期」行；`ink_stats` 报「过期待整理：N 条」；环境提示词有 `{{thepalestink.expired}}`。
+- 明确不做：不做逐条「已通知」去重（cron 就是整理时间，每次都报未处理数量）、不自动归档过期条目、不判断事实是否还成立。要改事实就 `ink_amend` 正文。
+- 改这块先跑 `node _dev/verify.mjs`（有时效用例），再跑 `tests/world.test.ts` 里「过期条目」「不填 expiresInDays 永不过期」两例；测试要模拟时间流逝，得改 `reminderWorld` 那个 `now` 返回的 Date 对象本身（`clock.setTime(...)`），只把 `tick(now)` 传成未来时间不够。
+
 ## 验证到哪一级
 
-- 行为自检：`node _dev/verify.mjs` → **87 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、七工具、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance 后先跑它。
+- 行为自检：`node _dev/verify.mjs` → **94 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、八个工具、时效与过期、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance 后先跑它。
 - 类型检查：`tsc --noEmit`（主项目）与 `tsc -p tsconfig.webui.json --noEmit`（面板）**都通过，0 错误**。
-- 单元测试：`vitest run` → **77/77 通过**（`tests/world.test.ts` 20、`tests/search.test.ts` 13、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
-- 面板构建：`dist/webui.js` **29.0kb**，esbuild 无警告。
+- 单元测试：`vitest run` → **79/79 通过**（`tests/world.test.ts` 22、`tests/search.test.ts` 13、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
+- 面板构建：`dist/webui.js` **29.4kb**，esbuild 无警告。
 - **`pnpm` 曾经静默挂住，已修**：`package.json` 里锁的 `packageManager: pnpm@11.28.6` 与本机 12.23.0 不一致，pnpm 10+ 会按字段去取旧版，取不到就无声卡死（`pnpm --version` 正常，因为它不读项目）。改成 `pnpm@12.23.0` 后 `pnpm install` / `pnpm typecheck` / `pnpm test` / `pnpm build:webui` 全部正常，`pnpm-lock.yaml` 已入库。**改这个字段前先看 `pnpm --version`。**
 - **不要用 PowerShell 文本管道写文件**：会话里有个防双重编码的插件，`Get-Content x | Set-Content x`、`Out-File`、`cat x > y`、`Tee-Object` 会被直接拒绝执行（看起来像「用户拒绝了命令」），就算跑通也可能把中文按 ANSI 写坏。读用 `read`、写用 `write`/`edit`；脚本里必须读写文件时用 `[IO.File]::ReadAllText` / `[IO.File]::WriteAllText` 配 `[Text.UTF8Encoding]::new($false)`。
-- `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：7 个工具、5 个占位符、2 个面板、2 个配置组全部通过，`describe.json` 与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。
+- `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：8 个工具、6 个占位符、2 个面板、2 个配置组全部通过，`describe.json` 与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。
 - `defaults().enabled` 恒为 `false`：宿主 `dryMount` 会拿这条当警告，装不装、开不开由 bot 声明与部署决定。
 - 第三级（装进实例目击行为）：未做，待开发者。要看的现象：World 页多两个页签、`ink_search` 回执、嵌入页「测试连接」出维度与耗时。
 

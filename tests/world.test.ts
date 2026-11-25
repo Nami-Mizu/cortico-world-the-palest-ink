@@ -398,6 +398,58 @@ describe('淡墨 · 提醒与自动归档', () => {
     await off.stop();
   });
 
+  it('过期条目：列得出、检索标已过期、整理提醒报数量、amend 能续期', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    // 时钟对象要可变：面板与 ink_expired 读的是 world.now()，不是 tick 的参数。
+    const at = new Date();
+    const world = reminderWorld(ctx, { writeCron: '* * * * *' }, at);
+    const host = new FakeHost();
+    await world.start(host);
+
+    const receipt = textOf(await tool(world, 'ink_remember').handler({ text: '周六去旧书店取预订的书', expiresInDays: 1 }, CALL));
+    expect(receipt).toContain('有效期 1 天');
+    const id = idFrom(receipt);
+
+    expect(textOf(await tool(world, 'ink_expired').handler({}, CALL))).toContain('没有过期的记忆');
+
+    // 把时钟推到三天后：条目应过期，整理提醒里带数量。
+    const later = new Date(Date.now() + 3 * 86_400_000);
+    at.setTime(later.getTime());
+    await world.tick(later);
+    const reminders = host.events.filter((event) => event.type === 'ink.reminder.schedule');
+    expect(reminders[reminders.length - 1]?.text).toContain('1 条已经过期');
+
+    const listed = textOf(await tool(world, 'ink_expired').handler({}, CALL));
+    expect(listed).toContain(id);
+    expect(listed).toContain('⏳');
+
+    // 过期但没归档：检索仍然找得到，只是要标出来。
+    const found = textOf(await tool(world, 'ink_search').handler({ query: '旧书店' }, CALL));
+    expect(found).toContain(id);
+    expect(found).toContain('⏳ 已过期');
+
+    const stats = textOf(await tool(world, 'ink_stats').handler({}, CALL));
+    expect(stats).toContain('过期待整理：1 条');
+
+    // 续期 30 天后就不再算过期。
+    const amended = textOf(await tool(world, 'ink_amend').handler({ id, expiresInDays: 30 }, CALL));
+    expect(amended).toContain('有效期 30 天');
+    expect(textOf(await tool(world, 'ink_expired').handler({}, CALL))).toContain('没有过期的记忆');
+    await world.stop();
+  });
+
+  it('不填 expiresInDays 的记忆永不过期', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const at = new Date();
+    const world = reminderWorld(ctx, { writeCron: '' }, at);
+    const host = new FakeHost();
+    await world.start(host);
+    await tool(world, 'ink_remember').handler({ text: '对方的生日是三月十二。' }, CALL);
+    await world.tick(new Date(Date.now() + 400 * 86_400_000));
+    expect(textOf(await tool(world, 'ink_expired').handler({}, CALL))).toContain('没有过期的记忆');
+    await world.stop();
+  });
+
   it('久未取用且重要度低的条目会被自动归档，置顶与重要度 5 不动', async () => {
     const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
     const now = new Date('2026-11-25T12:00:00+08:00');

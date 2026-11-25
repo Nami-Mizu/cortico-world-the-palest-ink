@@ -9,7 +9,7 @@
  * 于是 `_dev/verify.mjs`、测试与面板都能复用同一套排序。
  */
 
-import type { MemoryEntry, MemoryKind } from './types.ts';
+import { isExpired, type MemoryEntry, type MemoryKind } from './types.ts';
 
 /** 一次检索最多认几个词（再多就当用户粘了一整段）。 */
 export const MAX_TERMS = 8;
@@ -17,6 +17,8 @@ export const MAX_TERMS = 8;
 export const MAX_RESULTS = 50;
 /** 语义命中单独入选的最低余弦。低于它、又没有字面命中，就不算「找到」。 */
 export const DEFAULT_MIN_COSINE = 0.35;
+/** 已过期条目的排序降权：仍然能找到，但排在新鲜的同分条目之后。 */
+export const EXPIRED_PENALTY = 0.8;
 
 export interface SearchOptions {
   /** 检索词；空串返回空结果（除非只给了 tags/kind）。 */
@@ -53,6 +55,8 @@ export interface SearchHit {
   matched: string[];
   /** 语义余弦；没走语义或维度不符时是 undefined。 */
   semantic?: number;
+  /** 这条已经过期（命中照给，排序降权，回执要标出来）。 */
+  expired?: boolean;
 }
 
 export interface CjkUnit {
@@ -205,7 +209,7 @@ export function searchEntries(entries: readonly MemoryEntry[], opts: SearchOptio
       .slice()
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.importance - a.importance || a.id.localeCompare(b.id))
       .slice(0, limit)
-      .map((entry) => ({ entry, score: 0, matched: [] }));
+      .map((entry) => ({ entry, score: 0, matched: [], ...(isExpired(entry, now) ? { expired: true } : {}) }));
   }
 
   const semantic = opts.semantic;
@@ -252,9 +256,16 @@ export function searchEntries(entries: readonly MemoryEntry[], opts: SearchOptio
 
     if (!literal && semanticScore <= 0) continue;
 
+    const expired = isExpired(entry, now);
     const bonus = entry.importance * 0.5 + (entry.pinned ? 1 : 0) + recencyBonus(entry, now);
-    const score = (literal ? lexical : 0) + semanticScore + bonus;
-    hits.push({ entry, score, matched, ...(similarity !== undefined ? { semantic: similarity } : {}) });
+    const score = (literal ? lexical : 0) + semanticScore + bonus - (expired ? EXPIRED_PENALTY : 0);
+    hits.push({
+      entry,
+      score,
+      matched,
+      ...(similarity !== undefined ? { semantic: similarity } : {}),
+      ...(expired ? { expired: true } : {}),
+    });
   }
 
   return hits

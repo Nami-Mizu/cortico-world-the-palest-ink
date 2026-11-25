@@ -13,7 +13,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { join } from 'node:path';
 import {
   KIND_LABELS,
+  MAX_TTL_DAYS,
   MEMORY_SCHEMA,
+  isExpired,
   isMemoryKind,
   type MemoryCounts,
   type MemoryDatabaseFile,
@@ -37,6 +39,8 @@ export const ARCHIVE_KEEP = 200;
 export const DEFAULT_MAX_ENTRIES = 500;
 /** 容量上限的硬边界。 */
 export const MAX_ENTRIES_LIMIT = 100000;
+/** 一天有多少毫秒。 */
+const DAY_MS = 86_400_000;
 
 export interface MemoryStoreOptions {
   /** 宿主给的 World 共用数据目录。 */
@@ -56,6 +60,8 @@ export interface AddMemoryInput {
   pinned?: boolean;
   /** 没给重要度时的默认值（来自配置）。 */
   defaultImportance?: number;
+  /** 大概有效多少天；0 或省略 = 不过期，上限 MAX_TTL_DAYS。 */
+  expiresInDays?: number;
 }
 
 export interface AddMemoryResult {
@@ -71,6 +77,8 @@ export interface UpdateMemoryInput {
   source?: string;
   importance?: number;
   pinned?: boolean;
+  /** 改有效期：0 = 取消时效；给了才重算 `expiresAt`。 */
+  expiresInDays?: number;
 }
 
 export class MemoryStore {
@@ -173,12 +181,26 @@ export class MemoryStore {
       .slice(0, Math.max(0, limit));
   }
 
+  /** 已过期、但还没被处理的条目（按到期时间从早到晚）。仍然算「未归档」。 */
+  expired(now: Date | number = new Date()): MemoryEntry[] {
+    return this.live()
+      .filter((entry) => isExpired(entry, now))
+      .sort((a, b) => (a.expiresAt ?? '').localeCompare(b.expiresAt ?? '') || a.id.localeCompare(b.id));
+  }
+
+  /** 已过期的未归档条目数。 */
+  expiredCount(now: Date | number = new Date()): number {
+    return this.live().filter((entry) => isExpired(entry, now)).length;
+  }
+
   add(input: AddMemoryInput): AddMemoryResult {
     this.ensureLoaded();
     const text = this.cleanText(input.text, true);
     const kind = input.kind ?? 'note';
     if (!isMemoryKind(kind)) throw new Error(`未知的种类「${String(kind)}」；可用：${MEMORY_KINDS_TEXT()}。`);
-    const now = nowIso(this.timezone);
+    const at = new Date();
+    const now = nowIso(this.timezone, at);
+    const ttlDays = clampInt(input.expiresInDays, 0, MAX_TTL_DAYS, 0);
     const entry: MemoryEntry = {
       id: newId(),
       text,
@@ -191,6 +213,8 @@ export class MemoryStore {
       pinned: input.pinned === true,
       archived: false,
       recallCount: 0,
+      ttlDays,
+      expiresAt: ttlDays > 0 ? nowIso(this.timezone, new Date(at.getTime() + ttlDays * DAY_MS)) : null,
     };
     this.current().push(entry);
     const evicted = this.enforceLimit();
@@ -212,7 +236,12 @@ export class MemoryStore {
     if (patch.source !== undefined) found.source = this.cleanSource(patch.source);
     if (patch.importance !== undefined) found.importance = clampInt(patch.importance, 0, 5, found.importance);
     if (patch.pinned !== undefined) found.pinned = patch.pinned === true;
-    found.updatedAt = nowIso(this.timezone);
+    const at = new Date();
+    if (patch.expiresInDays !== undefined) {
+      found.ttlDays = clampInt(patch.expiresInDays, 0, MAX_TTL_DAYS, 0);
+      found.expiresAt = found.ttlDays > 0 ? nowIso(this.timezone, new Date(at.getTime() + found.ttlDays * DAY_MS)) : null;
+    }
+    found.updatedAt = nowIso(this.timezone, at);
     this.save();
     return { ...found, tags: [...found.tags] };
   }
@@ -311,6 +340,14 @@ export class MemoryStore {
     const text = typeof item.text === 'string' ? collapse(item.text) : '';
     if (!id || !text) return null;
     const createdAt = typeof item.createdAt === 'string' ? item.createdAt : nowIso(this.timezone);
+    const ttlDays = clampInt(item.ttlDays, 0, MAX_TTL_DAYS, 0);
+    const createdAtMs = Date.parse(createdAt);
+    const expiresAt =
+      typeof item.expiresAt === 'string' && item.expiresAt
+        ? item.expiresAt
+        : ttlDays > 0 && Number.isFinite(createdAtMs)
+          ? nowIso(this.timezone, new Date(createdAtMs + ttlDays * DAY_MS))
+          : null;
     return {
       id,
       text,
@@ -327,6 +364,8 @@ export class MemoryStore {
       ...(typeof item.archiveReason === 'string' && item.archiveReason ? { archiveReason: item.archiveReason } : {}),
       recallCount: clampInt(item.recallCount, 0, Number.MAX_SAFE_INTEGER, 0),
       ...(typeof item.lastRecalledAt === 'string' ? { lastRecalledAt: item.lastRecalledAt } : {}),
+      ttlDays,
+      expiresAt,
     };
   }
 

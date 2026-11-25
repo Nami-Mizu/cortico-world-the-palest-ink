@@ -18,6 +18,8 @@ function entry(overrides: Partial<MemoryEntry> = {}): MemoryEntry {
     pinned: false,
     archived: false,
     recallCount: 0,
+    ttlDays: 0,
+    expiresAt: null,
     ...overrides,
   };
 }

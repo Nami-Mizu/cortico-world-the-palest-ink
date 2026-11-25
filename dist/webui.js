@@ -390,6 +390,10 @@ var panel2 = {
           { k: "\u5199\u5165", v: when(entry.entry.createdAt) },
           { k: "\u4FEE\u8BA2", v: when(entry.entry.updatedAt) },
           { k: "\u53D6\u7528", v: `${entry.entry.recallCount} \u6B21${entry.lastRecalledAt ? `\uFF08\u6700\u8FD1 ${when(entry.lastRecalledAt)}\uFF09` : ""}` },
+          {
+            k: "\u6709\u6548\u671F",
+            v: entry.entry.expiresAt ? `${entry.entry.ttlDays} \u5929\uFF0C${when(entry.entry.expiresAt)} \u5230\u671F${entry.entry.expired ? "\uFF08\u5DF2\u8FC7\u671F\uFF0C\u5F85\u6574\u7406\uFF09" : ""}` : "\u6C38\u4E45"
+          },
           { k: "\u5DF2\u5411\u91CF\u5316", v: entry.vectorized ? "\u662F" : "\u5426\uFF08\u8BED\u4E49\u68C0\u7D22\u627E\u4E0D\u5230\u5B83\uFF09" }
         ]);
         const text = ui.h("pre", "mono", entry.text);
@@ -411,7 +415,7 @@ var panel2 = {
     const renderRows = (hits) => {
       table.clear("\u6CA1\u6709\u5339\u914D\u7684\u8BB0\u5FC6\u3002\u6362\u4E2A\u8BCD\u3001\u53BB\u6389\u6807\u7B7E\uFF0C\u6216\u70B9\u300C\u770B\u6700\u8FD1\u300D\u3002");
       for (const hit of hits) {
-        const flags = [hit.pinned ? "\u7F6E\u9876" : "", hit.archived ? "\u5F52\u6863" : "", hit.semantic ? "\u2248" : ""].filter(Boolean).join(" ");
+        const flags = [hit.pinned ? "\u7F6E\u9876" : "", hit.archived ? "\u5F52\u6863" : "", hit.expired ? "\u5DF2\u8FC7\u671F" : "", hit.semantic ? "\u2248" : ""].filter(Boolean).join(" ");
         const row = table.addRow([
           hit.id.slice(0, 14),
           hit.text || hit.tags.map((item) => `#${item}`).join(" "),
@@ -458,13 +462,14 @@ var panel2 = {
         ui.stat({ k: "\u672A\u5F52\u6863", v: snapshot.counts.live, unit: "\u6761", accent: true }),
         ui.stat({ k: "\u5F52\u6863", v: snapshot.counts.archived, unit: "\u6761" }),
         ui.stat({ k: "\u7F6E\u9876", v: snapshot.counts.pinned, unit: "\u6761" }),
+        ui.stat({ k: "\u8FC7\u671F\u5F85\u6574\u7406", v: snapshot.expired.count, unit: "\u6761" }),
         ui.stat({ k: "\u5BB9\u91CF\u4E0A\u9650", v: snapshot.limit, unit: "\u6761" })
       );
       embedLine.textContent = snapshot.embed.enabled ? `\u8BED\u4E49\u68C0\u7D22\uFF1A${snapshot.embed.state === "ready" ? "\u5C31\u7EEA" : snapshot.embed.state === "partial" ? `\u90E8\u5206\u5C31\u7EEA\uFF08${snapshot.embed.indexed}/${snapshot.embed.live} \u6761\u6709\u5411\u91CF\uFF09` : snapshot.embed.state === "error" ? `\u51FA\u9519\uFF08${snapshot.embed.lastError ?? "\u672A\u77E5"}\uFF09` : "\u5F00\u4E86\u4F46\u6CA1\u914D\u597D"} \xB7 ${snapshot.embed.model}` : "\u8BED\u4E49\u68C0\u7D22\uFF1A\u5173\uFF08\u53EA\u7528\u5B57\u9762\u5339\u914D\uFF09\u3002\u5230\u300C\u5D4C\u5165\u300D\u9875\u7B7E\u53EF\u4EE5\u63A5\u4E0A\u672C\u5730\u6216\u4E91\u7AEF\u7684\u5D4C\u5165\u6A21\u578B\u3002";
       embedLine.classList.toggle("bad", snapshot.embed.state === "error");
       const kinds = snapshot.kinds.map((item) => `${item.label} ${item.count}`).join(" \xB7 ");
       const tags = snapshot.tags.length ? snapshot.tags.map((item) => `${item.tag}(${item.count})`).join("\u3001") : "\uFF08\u8FD8\u6CA1\u6709\u6807\u7B7E\uFF09";
-      note.textContent = `\u79CD\u7C7B\uFF1A${kinds}\uFF5C\u6807\u7B7E\uFF1A${tags}\uFF5C\u5B58\u6863\uFF1A${snapshot.storeFile}`;
+      note.textContent = `\u79CD\u7C7B\uFF1A${kinds}\uFF5C\u6807\u7B7E\uFF1A${tags}\uFF5C\u8FC7\u671F\u5F85\u6574\u7406 ${snapshot.expired.count} \u6761\uFF5C\u5B58\u6863\uFF1A${snapshot.storeFile}`;
       renderRows(snapshot.recent);
       if (snapshot.recent.length) {
         msg.textContent = `\u6700\u8FD1\u4FEE\u8BA2\u7684 ${snapshot.recent.length} \u6761\u3002`;
