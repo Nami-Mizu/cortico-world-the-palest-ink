@@ -19,6 +19,9 @@ export const INK_EVENTS = {
   embedReady: 'ink.embed.ready',
   embedFailed: 'ink.embed.failed',
   reindexed: 'ink.embed.reindexed',
+  scheduleReminder: 'ink.reminder.schedule',
+  contextReminder: 'ink.reminder.context',
+  handoffReminder: 'ink.reminder.handoff',
 } as const;
 
 export type InkEventType = (typeof INK_EVENTS)[keyof typeof INK_EVENTS];
@@ -87,5 +90,29 @@ export const INK_EVENT_DECLS: readonly EventDescribe[] = [
       en: 'Vector backfill finished (reports how many were indexed and how many failed).',
     },
     trigger: 'flush',
+  },
+  {
+    type: INK_EVENTS.scheduleReminder,
+    description: {
+      zh: '到了配置的钟点，提醒模型回顾这段时间、把值得留下的写进记忆库。',
+      en: 'The configured cron time arrived; the model is reminded to write down what is worth keeping.',
+    },
+    trigger: 'flush',
+  },
+  {
+    type: INK_EVENTS.contextReminder,
+    description: {
+      zh: '估算的上下文用量越过阈值，提醒模型趁细节还在、先写记忆。',
+      en: 'Estimated context usage crossed the threshold; the model is reminded to write memories while details are fresh.',
+    },
+    trigger: 'flush',
+  },
+  {
+    type: INK_EVENTS.handoffReminder,
+    description: {
+      zh: '上下文刚完成交接，提醒模型补写交接中可能丢掉、但之后会用到的细节。',
+      en: 'Context handoff just finished; the model is reminded to write details that may have been lost.',
+    },
+    trigger: 'preempt',
   },
 ];

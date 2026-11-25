@@ -58,6 +58,30 @@ export interface InkConfigSection {
   embedDailyBudget: number;
   /** 换模型或首次启用后自动给旧条目补向量。 */
   embedAutoReindex: boolean;
+
+  /** 定时提醒写记忆的 cron（分 时 日 月 周）；空串 = 不提醒。 */
+  writeCron: string;
+  /** 定时提醒时追加的一句话；空串 = 只用默认措辞。 */
+  writeCronNote: string;
+  /** 上下文用到窗口的百分之几时提醒写记忆；0 = 不提醒。 */
+  contextReminderPercent: number;
+  /** 两次上下文提醒之间至少隔多少分钟。 */
+  contextReminderCooldownMinutes: number;
+  /** 上下文交接完成后提醒补写。 */
+  handoffReminder: boolean;
+
+  /** 是否自动归档低价值条目。 */
+  autoArchiveEnabled: boolean;
+  /** 多少天没被取用算「久远」。 */
+  autoArchiveAgeDays: number;
+  /** 重要度不高于几分才算「不重要」。 */
+  autoArchiveImportance: number;
+  /** 是否自动归档重复/冲突的旧条目。 */
+  autoArchiveConflicts: boolean;
+  /** 相似度达到多少算「几乎重复」。 */
+  conflictSimilarity: number;
+  /** 两次自动归档检查之间至少隔多少分钟。 */
+  maintenanceIntervalMinutes: number;
 }
 
 export const INK_DEFAULTS: InkConfigSection = {
@@ -83,6 +107,20 @@ export const INK_DEFAULTS: InkConfigSection = {
   embedMaxRetries: 2,
   embedDailyBudget: 2000,
   embedAutoReindex: true,
+
+  // 默认不按钟点提醒：几点该写记忆是人的作息，不该由包替人定。
+  writeCron: '',
+  writeCronNote: '',
+  contextReminderPercent: 75,
+  contextReminderCooldownMinutes: 60,
+  handoffReminder: true,
+
+  autoArchiveEnabled: true,
+  autoArchiveAgeDays: 30,
+  autoArchiveImportance: 1,
+  autoArchiveConflicts: true,
+  conflictSimilarity: 0.82,
+  maintenanceIntervalMinutes: 60,
 };
 
 export const INK_CONFIG_GROUP: ConfigGroup = {
@@ -229,6 +267,106 @@ export const INK_CONFIG_GROUP: ConfigGroup = {
         type: 'boolean',
         title: '自动补向量',
         description: '首次启用或换模型后，启动时自动给未向量化的条目补上（受批量、限流与每日预算约束）。',
+        'x-hot': true,
+      },
+    },
+  },
+};
+
+/**
+ * 第二组配置：什么时候提醒写、什么时候自动归档。
+ *
+ * 与上面那组分开，是因为它回答的是「节奏」而不是「容量与模型」，
+ * 放在同一张卡里会让人以为提醒是存储的一部分。
+ */
+export const INK_RHYTHM_CONFIG_GROUP: ConfigGroup = {
+  id: 'world:thepalestink.rhythm',
+  owner: 'world:thepalestink',
+  schema: {
+    type: 'object',
+    title: '淡墨 · 写记忆的节奏',
+    description:
+      '提醒是「推一条事件给模型」：它会在下一批看到，然后自己决定写什么。这里不替模型写记忆，也不要求它每次都写。时间按部署时区理解。',
+    properties: {
+      'worlds.thepalestink.writeCron': {
+        type: 'string',
+        title: '定时提醒（cron）',
+        description: '五段：分 时 日 月 周，例如 30 7 * * *（每天 07:30）。留空表示不按钟点提醒。',
+        'x-hot': true,
+      },
+      'worlds.thepalestink.writeCronNote': {
+        type: 'string',
+        title: '定时提醒追加的话',
+        description: '每次到点会附在提醒后面，例如「顺便看一眼今天的待办」。留空只用默认措辞。',
+        'x-hot': true,
+      },
+      'worlds.thepalestink.contextReminderPercent': {
+        type: 'integer',
+        title: '上下文阈值（%）',
+        description:
+          '估到上下文窗口用了几成时提醒写记忆；0 = 不提醒。估算按「中日韩一字一 token、其余 3.6 字符一 token」粗算，宁可早提醒。',
+        minimum: 0,
+        maximum: 95,
+        'x-hot': true,
+      },
+      'worlds.thepalestink.contextReminderCooldownMinutes': {
+        type: 'integer',
+        title: '上下文提醒间隔（分钟）',
+        description: '阈值提醒至少隔这么久才说一次，免得每轮都催。',
+        minimum: 5,
+        maximum: 1440,
+        'x-hot': true,
+      },
+      'worlds.thepalestink.handoffReminder': {
+        type: 'boolean',
+        title: '交接后提醒补写',
+        description: '上下文交接完成后推一条「刚丢掉细节，有遗漏现在补」。宿主没有「交接前」的钩子，所以提醒落在交接后的第一批。',
+        'x-hot': true,
+      },
+
+      'worlds.thepalestink.autoArchiveEnabled': {
+        type: 'boolean',
+        title: '自动归档',
+        description: '按下面的两条规则把低价值条目移进归档（不删除，检索加「含归档」仍能看到）。置顶与重要度 5 的条目不自动动。',
+        'x-hot': true,
+      },
+      'worlds.thepalestink.autoArchiveAgeDays': {
+        type: 'integer',
+        title: '多久没动算久远（天）',
+        description: '按「最近取用时间，没有则按最近修订时间」算。',
+        minimum: 1,
+        maximum: 3650,
+        'x-hot': true,
+      },
+      'worlds.thepalestink.autoArchiveImportance': {
+        type: 'integer',
+        title: '低重要度阈值',
+        description: '重要度不高于几分才可能被自动归档（0–4；5 永远不动）。',
+        minimum: 0,
+        maximum: 4,
+        'x-hot': true,
+      },
+      'worlds.thepalestink.autoArchiveConflicts': {
+        type: 'boolean',
+        title: '归档重复/冲突条目',
+        description: '同一件事记了两遍、说法还冲突时，保留较新的那条，旧的归档并写明原因。',
+        'x-hot': true,
+      },
+      'worlds.thepalestink.conflictSimilarity': {
+        type: 'number',
+        title: '算重复的相似度',
+        description: '按中文相邻两字、英文单词的 Jaccard 相似度；0.5–0.99。调低会误伤「主题相近」的条目，建议 0.8 以上。',
+        minimum: 0.5,
+        maximum: 0.99,
+        multipleOf: 0.01,
+        'x-hot': true,
+      },
+      'worlds.thepalestink.maintenanceIntervalMinutes': {
+        type: 'integer',
+        title: '自动归档检查间隔（分钟）',
+        description: '多久检查一次；启动时也会查一次。',
+        minimum: 5,
+        maximum: 1440,
         'x-hot': true,
       },
     },

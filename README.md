@@ -12,7 +12,9 @@
 - 嵌入调用带限流：并发、每分钟请求数、超时、重试退避、每日预算，防止把 API 打到 429、也防止账单失控。
 - 记错了可以按 id 修订；用不着了先归档、必要时才物理删除。
 - 容量有上限（默认 500 条），满了淘汰**最久没被取用**的条目到归档区，置顶条目不淘汰。
-- 两个面板：「记忆库」给人看条目与检索结果；「嵌入」引导人类配置供应商、测连接、看用量。
+- 会挑时候提醒模型写：定时（cron，如 `30 7 * * *`）、上下文估算过阈值、上下文刚交接完。提醒只是提示，不写也行。
+- 会自动归档两类记忆：久没被取用且重要度低的；两条内容几乎重复的（留较新/较重要的）。置顶与重要度 5 永不自动动。
+- 两个面板：「记忆库」给人看条目、检索结果与「写记忆的节奏」；「嵌入」引导人类配置供应商、测连接、看用量。
 - 存档是人类可读的 JSON，坏档会先改名备份再从空库继续，不会静默丢数据。
 
 ## 装
@@ -40,7 +42,7 @@
 
 | 页签 | 方法 | 说明 |
 | --- | --- | --- |
-| 记忆库 | `snapshot` | 规模、种类分布、标签榜、最近 30 条、语义状态 |
+| 记忆库 | `snapshot` | 规模、种类分布、标签榜、最近 30 条、语义状态、写记忆的节奏 |
 | 记忆库 | `search` | 复用工具那套检索（含语义与降级口径） |
 | 记忆库 | `entry` | 单条全文、来源、归档原因、是否已向量化 |
 | 嵌入 | `status` | 状态灯（off/unconfigured/error/ready/partial）、模型、维度、用量、预算 |
@@ -50,12 +52,14 @@
 | 嵌入 | `reindex` | 只补缺的向量（换模型会整仓重建） |
 | 嵌入 | `presets` | 四套供应商预设：OpenAI / Ollama / LM Studio / 自定义 |
 
+记忆库面板另有一块只读的「写记忆的节奏」：定时是否到点、下次什么时候、上下文估到多少、最近一次提醒、上次自动归档了几条、为什么。改这些要去 World 配置页（同样是只读展示，改不改由人定）。
+
 面板调用统一返回 `{ ok: true, data }` 或 `{ ok: false, error }`，失败不会把整页打回空白。
 
 ## 事件
 
-`ink.memory.loaded` / `added` / `amended` / `archived` / `purged` / `recalled` / `evicted` / `ink.store.recovered` / `ink.embed.ready` / `ink.embed.failed` / `ink.embed.reindexed`。
-载入、坏档恢复是 `preempt`，其余是 `flush`。
+`ink.memory.loaded` / `added` / `amended` / `archived` / `purged` / `recalled` / `evicted` / `ink.store.recovered` / `ink.embed.ready` / `ink.embed.failed` / `ink.embed.reindexed` / `ink.reminder.schedule` / `ink.reminder.context` / `ink.reminder.handoff`。
+载入、坏档恢复、交接提醒是 `preempt`，其余是 `flush`。
 
 ## 配置
 
@@ -92,6 +96,24 @@
 
 密钥只走部署的 `.env`：面板「嵌入」页填写后会调用宿主的 `storeSecret`，配置里只留变量名。本地回环地址（127.0.0.1 / localhost）允许不带密钥。
 
+### 写记忆的节奏
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `writeCron` | `''`（关） | 定时提醒的 cron，五段（分 时 日 月 周），如 `30 7 * * *`；留空不提醒 |
+| `writeCronNote` | `''`（空） | 定时提醒时附在后面的自定义提示，比如「重点回顾项目约定」 |
+| `contextReminderPercent` | `75` | 上下文估算到这个百分比时提醒（0–95，0 = 关） |
+| `contextReminderCooldownMinutes` | `60` | 两次上下文提醒之间至少隔多久（5–1440 分钟） |
+| `handoffReminder` | `true` | 上下文交接完成后提醒补写记忆 |
+| `autoArchiveEnabled` | `true` | 自动归档总开关 |
+| `autoArchiveAgeDays` | `30` | 多少天没被取用算「久远」（1–3650） |
+| `autoArchiveImportance` | `1` | 重要度不高于几分才算「不重要」（0–4） |
+| `autoArchiveConflicts` | `true` | 是否归档内容几乎重复的旧条目 |
+| `conflictSimilarity` | `0.82` | 重复判定阈值（0.5–0.99，Jaccard 相似度） |
+| `maintenanceIntervalMinutes` | `60` | 自动归档检查的间隔（5–1440 分钟） |
+
+提醒的三种时机：`writeCron` 到点；上下文**估算**过阈值；`onHandoffEnded`（交接完成后）。宿主没有「交接开始前」的钩子，所以交接提醒落在交接后的第一批。上下文 token 数是按交接以来事件文字估的（中日韩一字一 token、其余 3.6 字符一 token），只用于阈值，**不是**宿主的精确用量。
+
 ## 存档
 
 - 记忆正文：`<dataDir>/thepalestink/entries.json`，`schema` 为 `1`。
@@ -113,9 +135,9 @@
 
 ```bash
 pnpm typecheck                 # 主项目 + 面板两个 tsconfig
-pnpm test                      # vitest，43 个用例
+pnpm test                      # vitest，77 个用例
 pnpm build:webui               # esbuild 打 dist/webui.js
-node _dev/verify.mjs           # 无依赖行为自检（69 项，不需要 pnpm）
+node _dev/verify.mjs           # 无依赖行为自检（87 项，不需要 pnpm）
 node _dev/gen-describe.mjs     # 重新生成 describe.json
 ```
 
@@ -148,4 +170,6 @@ node node_modules/tsx/dist/cli.mjs _dev/host-check.ts
 - 语义检索一条一个向量：长条目不切块，超长正文的语义会被平均掉；重要内容建议一条一件事。
 - 中文靠 2-gram 放宽而不是分词器：覆盖不足一半仍会判「没命中」，同义词多写标签更稳。
 - 容量淘汰按 `lastRecalledAt ?? updatedAt`，不区分种类；重要条目请置顶。
+- 上下文提醒是**估算**：宿主没把 token 用量交给 World，这里按交接以来事件的字数换算，工具回执不计入，所以只会低估。真要精确，等宿主开放用量接口。
+- 自动归档是启发式：重复判定用 2-gram/词的 Jaccard，同义改写抓不到；「事实冲突」判断只看正文相似度，不做语义比对。
 - 没有导出/迁移命令：换机就拷 `entries.json`（`vectors.json` 可丢）。

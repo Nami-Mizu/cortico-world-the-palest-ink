@@ -11,13 +11,15 @@
 
 import { fileURLToPath } from 'node:url';
 import type { ToolCallContext, ToolDef, ToolOutcome, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
-import { INK_CONFIG_GROUP, INK_DEFAULTS, EMBED_PRESETS, EMBED_PROTOCOLS, type EmbedProtocol, type InkConfigSection } from './config.ts';
+import { EMBED_PRESETS, EMBED_PROTOCOLS, INK_CONFIG_GROUP, INK_DEFAULTS, INK_RHYTHM_CONFIG_GROUP, type EmbedProtocol, type InkConfigSection } from './config.ts';
+import { cronMatches, describeCron, nextCronMatch, parseCron, zonedParts, type CronSpec } from './cron.ts';
 import { EmbeddingClient, EmbeddingError, type EmbeddingSettings, type FetchLike } from './embedding.ts';
 import { INK_EVENTS, type InkEventType } from './events.ts';
+import { planMaintenance, type ArchiveDecision } from './maintenance.ts';
 import { planQuery, searchEntries, type SearchHit } from './search.ts';
 import { MemoryStore } from './store.ts';
 import { KIND_LABELS, MEMORY_KINDS, type MemoryEntry, type MemoryKind } from './types.ts';
-import { clampInt, collapse, nowIso, truncate } from './util.ts';
+import { clampInt, collapse, estimateTokens, nowIso, truncate } from './util.ts';
 import { VectorStore, describeEmbedTarget } from './vector.ts';
 
 /** World id：全小写、无连字符，配置路径因此是 `worlds.thepalestink.*`。 */
@@ -62,6 +64,10 @@ export interface InkWorldOptions {
   persist?: (patch: Record<string, unknown>) => void;
   /** 注入 HTTP 客户端；测试用，不传就走全局 fetch。 */
   fetchImpl?: FetchLike;
+  /** 注入时钟；测试用。默认取系统时间。 */
+  now?: () => Date;
+  /** 定时检查的间隔（毫秒）；测试可调大以免真定时。默认 30 秒。 */
+  schedulerIntervalMs?: number;
 }
 
 /** 工具声明；handler 在 `tools()` 里按名字接上。 */
@@ -231,6 +237,38 @@ export class ThePalestInkWorld implements World {
   /** 补向量单飞：并发触发时共用同一个 Promise。 */
   private backfillRun: Promise<{ indexed: number; failed: number }> | null = null;
 
+  /** 定时检查的句柄；stop() 时清掉。 */
+  private timer: ReturnType<typeof setInterval> | null = null;
+  /** 防止一轮检查还没跑完又进一轮。 */
+  private ticking = false;
+  /** 上次命中的 cron 分钟（`2026-11-25T07:30`），同一分钟只提醒一次。 */
+  private lastCronKey = '';
+  /** cron 解析缓存：配置改了就重解析。 */
+  private cronSource = '';
+  private cronSpec: CronSpec | null = null;
+  private cronError: string | null = null;
+  /** 上次上下文提醒的时刻（毫秒）。 */
+  private lastContextReminderAt = 0;
+  /** 上次自动归档检查的时刻（毫秒）。 */
+  private lastMaintenanceAt = 0;
+  /** 交接时的游标：之后的上下文估算只数这之后的事件。 */
+  private handoffCursor = 0;
+  /** 估算出的上下文用量，面板展示用。 */
+  private contextEstimate: { tokens: number; window: number | null; percent: number | null } = {
+    tokens: 0,
+    window: null,
+    percent: null,
+  };
+  /** 最近一次自动归档的结果。 */
+  private maintenanceStats: { lastRunAt: string | null; lastArchived: number; totalArchived: number; sample: ArchiveDecision[] } = {
+    lastRunAt: null,
+    lastArchived: 0,
+    totalArchived: 0,
+    sample: [],
+  };
+  /** 最近一次推出去的提醒，面板上能看见「上次提醒是什么时候」。 */
+  private lastReminder: { kind: 'schedule' | 'context' | 'handoff'; at: string; text: string } | null = null;
+
   constructor(opts: InkWorldOptions) {
     this.opts = opts;
     this.store = new MemoryStore({
@@ -272,7 +310,7 @@ export class ThePalestInkWorld implements World {
     void language;
     return {
       label: INK_LABEL,
-      config: [INK_CONFIG_GROUP],
+      config: [INK_CONFIG_GROUP, INK_RHYTHM_CONFIG_GROUP],
       panels: [
         {
           id: 'library',
@@ -323,10 +361,183 @@ export class ThePalestInkWorld implements World {
       // 不挡 start：补向量可能很慢，先让 World 挂上去。
       void this.backfill(AUTO_BACKFILL_LIMIT).catch(() => undefined);
     }
+    // 启动时先查一次自动归档：上次关机的这段时间也该按规则收拾。
+    void this.runMaintenance('start').catch(() => undefined);
+    this.startScheduler();
   }
 
   async stop(): Promise<void> {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
     this.host = null;
+  }
+
+  /**
+   * 交接完成后：重设上下文估算的起点，并（可选）提醒补写。
+   * 宿主没有「交接开始前」的钩子，所以这条提醒落在交接后的第一批。
+   */
+  onHandoffEnded(): void {
+    this.handoffCursor = this.host?.store.latestCursor() ?? this.handoffCursor;
+    this.lastContextReminderAt = 0;
+    if (!this.opts.cfg.handoffReminder) return;
+    const text =
+      '上下文刚交接完：交接前会话里的细节，现在只剩摘要了。如果其中有之后会用到的——做过什么、为什么那么定、对方提过什么要求——趁摘要里还留着线索，用 ink_remember 补上；已经在库里的别重复写。';
+    this.lastReminder = { kind: 'handoff', at: nowIso(this.opts.timezone, this.now()), text };
+    void this.emit(INK_EVENTS.handoffReminder, text);
+  }
+
+  /** 启动定时检查；间隔可注入，测试里调大即可不真等。 */
+  private startScheduler(): void {
+    if (this.timer) clearInterval(this.timer);
+    const interval = Math.max(1000, this.opts.schedulerIntervalMs ?? 30_000);
+    this.timer = setInterval(() => {
+      void this.tick();
+    }, interval);
+    // 别让这个定时器把宿主进程吊住（Node 的 Timeout 才有 unref）。
+    (this.timer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  private now(): Date {
+    return this.opts.now ? this.opts.now() : new Date();
+  }
+
+  /**
+   * 一轮检查：cron 到点、上下文过阈值、自动归档到期。
+   * 公开给测试与面板用；`now` 可注入，行为完全可复现。
+   */
+  async tick(now: Date = this.now()): Promise<void> {
+    if (this.ticking) return;
+    this.ticking = true;
+    try {
+      await this.checkSchedule(now);
+      await this.checkContextReminder(now);
+      this.maybeMaintenance(now);
+    } catch (error) {
+      this.host?.log.warn(`[thepalestink] 提醒检查失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.ticking = false;
+    }
+  }
+
+  /** cron 到点就推一条「该回顾了」。同一分钟只推一次。 */
+  private async checkSchedule(now: Date): Promise<void> {
+    const expr = this.opts.cfg.writeCron.trim();
+    if (!expr) {
+      this.cronSpec = null;
+      this.cronSource = '';
+      this.cronError = null;
+      return;
+    }
+    if (this.cronSource !== expr) {
+      this.cronSource = expr;
+      try {
+        this.cronSpec = parseCron(expr);
+        this.cronError = null;
+      } catch (error) {
+        this.cronSpec = null;
+        this.cronError = error instanceof Error ? error.message : String(error);
+        return;
+      }
+    }
+    const spec = this.cronSpec;
+    if (!spec) return;
+    const parts = zonedParts(now, this.opts.timezone);
+    if (!cronMatches(spec, parts)) return;
+    const key = `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}T${pad2(parts.hour)}:${pad2(parts.minute)}`;
+    if (key === this.lastCronKey) return;
+    this.lastCronKey = key;
+    const lines = [
+      `到点了（${describeCron(spec)}，cron「${expr}」）。花一分钟回顾这段时间：对方说过的偏好、定下来的事、还没做完的待办，有没有值得留下的。`,
+    ];
+    const note = this.opts.cfg.writeCronNote.trim();
+    if (note) lines.push(note);
+    lines.push('写之前先 ink_search 查重；重复的用 ink_amend 改。一次写 1–3 条就够，没有值得写的就不写。');
+    const text = lines.join('\n');
+    this.lastReminder = { kind: 'schedule', at: nowIso(this.opts.timezone, now), text };
+    await this.emit(INK_EVENTS.scheduleReminder, text);
+  }
+
+  /**
+   * 上下文估算过阈值就提醒。
+   *
+   * 宿主没把 token 用量交给 World，这里按「交接以来事件里的字数」粗估：
+   * 中日韩一字一 token、其余 3.6 字符一 token。工具回执不在事件里，所以只会低估，不会虚报。
+   */
+  private async checkContextReminder(now: Date): Promise<void> {
+    const percentLimit = clampInt(this.opts.cfg.contextReminderPercent, 0, 95, 0);
+    const window = this.host?.modelFacts.contextWindow() ?? null;
+    const used = this.estimateContextTokens();
+    const percent = window ? Math.min(999, Math.round((used / window) * 100)) : null;
+    this.contextEstimate = { tokens: used, window, percent };
+    if (!percentLimit || !window || percent === null) return;
+    if (percent < percentLimit) return;
+    const cooldownMs = clampInt(this.opts.cfg.contextReminderCooldownMinutes, 5, 1440, 60) * 60_000;
+    if (this.lastContextReminderAt && now.getTime() - this.lastContextReminderAt < cooldownMs) return;
+    this.lastContextReminderAt = now.getTime();
+    const text = `上下文估到 ${percent}%（约 ${used} / ${window} token，按字数粗估）。趁细节还在，把之后会用到的写下来：正在做的事的进展、约定、还没解决的问题。交接之后这些就只剩摘要了。`;
+    this.lastReminder = { kind: 'context', at: nowIso(this.opts.timezone, now), text };
+    await this.emit(INK_EVENTS.contextReminder, text);
+  }
+
+  /** 交接以来（或启动以来）的事件字数换算成 token。 */
+  private estimateContextTokens(): number {
+    const host = this.host;
+    if (!host) return 0;
+    try {
+      const events = host.store.range({ fromCursor: this.handoffCursor + 1 });
+      let total = 0;
+      for (const event of events.slice(-2000)) total += estimateTokens(event.text ?? '');
+      return total;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** 到间隔就做一次自动归档检查；不 await，免得拖住 tick。 */
+  private maybeMaintenance(now: Date): void {
+    const intervalMs = clampInt(this.opts.cfg.maintenanceIntervalMinutes, 5, 1440, 60) * 60_000;
+    if (this.lastMaintenanceAt && now.getTime() - this.lastMaintenanceAt < intervalMs) return;
+    void this.runMaintenance('timer', now).catch(() => undefined);
+  }
+
+  /**
+   * 自动归档：低价值、久未取用的进归档；重复/冲突的留较新那条。
+   * 返回实际归档了哪些，方便测试与面板。
+   */
+  async runMaintenance(reason: 'start' | 'timer' | 'manual' = 'timer', now: Date = this.now()): Promise<{ archived: number; decisions: ArchiveDecision[] }> {
+    this.lastMaintenanceAt = now.getTime();
+    const cfg = this.opts.cfg;
+    const decisions = planMaintenance(
+      this.store.all(),
+      {
+        enabled: cfg.autoArchiveEnabled,
+        ageDays: clampInt(cfg.autoArchiveAgeDays, 1, 3650, 30),
+        importance: clampInt(cfg.autoArchiveImportance, 0, 4, 1),
+        conflicts: cfg.autoArchiveConflicts,
+        similarity: clamp01(cfg.conflictSimilarity, 0.82),
+      },
+      now,
+    );
+    const applied: ArchiveDecision[] = [];
+    for (const decision of decisions) {
+      const entry = this.store.archive(decision.id, decision.reason);
+      if (!entry) continue;
+      applied.push(decision);
+      await this.emit(
+        INK_EVENTS.archived,
+        `自动归档 ${entry.id}（${KIND_LABELS[entry.kind]}）：「${truncate(entry.text, EVENT_PREVIEW_CHARS)}」——${decision.reason}`,
+      );
+    }
+    this.maintenanceStats = {
+      lastRunAt: nowIso(this.opts.timezone, now),
+      lastArchived: applied.length,
+      totalArchived: this.maintenanceStats.totalArchived + applied.length,
+      sample: applied.slice(0, 5),
+    };
+    if (reason !== 'manual' && applied.length) {
+      this.host?.log.info(`[thepalestink] 自动归档 ${applied.length} 条（${reason}）`);
+    }
+    return { archived: applied.length, decisions: applied };
   }
 
   private async remember(args: Record<string, unknown>, _ctx: ToolCallContext): Promise<string | ToolOutcome> {
@@ -757,10 +968,60 @@ export class ThePalestInkWorld implements World {
       tags: this.store.topTags(12),
       recent,
       embed: this.embedSummary(),
+      rhythm: this.rhythmSummary(),
       storeFile: this.store.file,
       vectorFile: this.vectors.file,
       recovery: this.store.recovery(),
     };
+  }
+
+  /** 面板「写记忆的节奏」卡的数据：提醒条件、下次到点、最近一次自动归档。 */
+  private rhythmSummary(): unknown {
+    const cfg = this.opts.cfg;
+    const expr = cfg.writeCron.trim();
+    const upcoming = this.upcomingCron(expr);
+    return {
+      cron: expr,
+      cronValid: upcoming.valid,
+      cronError: upcoming.error,
+      cronNextAt: upcoming.nextAt,
+      cronText: upcoming.text,
+      contextPercentLimit: clampInt(cfg.contextReminderPercent, 0, 95, 0),
+      contextCooldownMinutes: clampInt(cfg.contextReminderCooldownMinutes, 5, 1440, 60),
+      estimatedTokens: this.contextEstimate.tokens,
+      contextWindow: this.contextEstimate.window,
+      estimatedPercent: this.contextEstimate.percent,
+      handoffReminder: cfg.handoffReminder,
+      lastReminder: this.lastReminder,
+      maintenance: {
+        enabled: cfg.autoArchiveEnabled,
+        ageDays: clampInt(cfg.autoArchiveAgeDays, 1, 3650, 30),
+        importance: clampInt(cfg.autoArchiveImportance, 0, 4, 1),
+        conflicts: cfg.autoArchiveConflicts,
+        similarity: clamp01(cfg.conflictSimilarity, 0.82),
+        lastRunAt: this.maintenanceStats.lastRunAt,
+        lastArchived: this.maintenanceStats.lastArchived,
+        totalArchived: this.maintenanceStats.totalArchived,
+        sample: this.maintenanceStats.sample,
+      },
+    };
+  }
+
+  /** 解析 cron 并给出「下次什么时候」；解析失败时把原因带回面板。 */
+  private upcomingCron(expr: string): { valid: boolean; error: string | null; nextAt: string | null; text: string | null } {
+    if (!expr) return { valid: true, error: null, nextAt: null, text: null };
+    try {
+      const spec = parseCron(expr);
+      const at = nextCronMatch(spec, this.now(), this.opts.timezone);
+      return {
+        valid: true,
+        error: null,
+        nextAt: at ? nowIso(this.opts.timezone, at) : null,
+        text: describeCron(spec),
+      };
+    } catch (error) {
+      return { valid: false, error: error instanceof Error ? error.message : String(error), nextAt: null, text: null };
+    }
   }
 
   private async librarySearch(args: Record<string, unknown>): Promise<unknown> {
@@ -1059,6 +1320,15 @@ export class ThePalestInkWorld implements World {
     const fallback = clampInt(this.opts.cfg.searchLimit, 1, 50, 8);
     return clampInt(value, 1, 50, fallback);
   }
+}
+
+const pad2 = (value: number): string => String(value).padStart(2, '0');
+
+/** 相似度阈值夹在 0.5–0.99：再低会误伤「主题相近」，再高等于只抓完全一样。 */
+function clamp01(value: unknown, fallback: number): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(0.99, Math.max(0.5, n));
 }
 
 /** 面板里展示检索计划用。 */

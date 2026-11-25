@@ -89,6 +89,39 @@ export interface EmbeddingStatus extends EmbedSummary {
   target: string;
 }
 
+export interface PanelArchiveSample {
+  id: string;
+  reason: string;
+  kind: 'stale' | 'conflict';
+}
+
+/** 「写记忆的节奏」：提醒条件、下次到点、最近一次自动归档。 */
+export interface PanelRhythm {
+  cron: string;
+  cronValid: boolean;
+  cronError: string | null;
+  cronNextAt: string | null;
+  cronText: string | null;
+  contextPercentLimit: number;
+  contextCooldownMinutes: number;
+  estimatedTokens: number;
+  contextWindow: number | null;
+  estimatedPercent: number | null;
+  handoffReminder: boolean;
+  lastReminder: { kind: 'schedule' | 'context' | 'handoff'; at: string; text: string } | null;
+  maintenance: {
+    enabled: boolean;
+    ageDays: number;
+    importance: number;
+    conflicts: boolean;
+    similarity: number;
+    lastRunAt: string | null;
+    lastArchived: number;
+    totalArchived: number;
+    sample: PanelArchiveSample[];
+  };
+}
+
 export interface LibrarySnapshot {
   counts: PanelCounts;
   limit: number;
@@ -96,6 +129,7 @@ export interface LibrarySnapshot {
   tags: TagCount[];
   recent: PanelEntry[];
   embed: EmbedSummary;
+  rhythm: PanelRhythm;
   storeFile: string;
   vectorFile: string;
   recovery: string | null;

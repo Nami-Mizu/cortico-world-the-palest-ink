@@ -279,6 +279,212 @@ describe('淡墨 · 语义检索', () => {
   });
 });
 
+describe('淡墨 · 提醒与自动归档', () => {
+  function reminderWorld(ctx: { dataDir: string; cfg: InkConfigSection }, cfg: Partial<InkConfigSection>, at: Date): ThePalestInkWorld {
+    // 复用 ctx.cfg 的引用：面板保存 / ctx.persist 要能热改到这个世界实例。
+    Object.assign(ctx.cfg as object, { ...INK_DEFAULTS, ...cfg });
+    return new ThePalestInkWorld({
+      cfg: ctx.cfg,
+      timezone: 'Asia/Shanghai',
+      dataDir: ctx.dataDir,
+      now: () => at,
+    });
+  }
+
+  it('cron 到点推一条提醒，同一分钟只推一次', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const at = new Date('2026-11-25T23:30:00+08:00');
+    const world = reminderWorld(ctx, { writeCron: '* * * * *', writeCronNote: '重点看项目约定。' }, at);
+    const host = new FakeHost();
+    await world.start(host);
+
+    await world.tick(at);
+    const reminders = (): number => host.events.filter((event) => event.type === 'ink.reminder.schedule').length;
+    expect(reminders()).toBe(1);
+    expect(host.events[host.events.length - 1].text).toContain('重点看项目约定');
+
+    // 同一分钟不重复推
+    await world.tick(at);
+    expect(reminders()).toBe(1);
+
+    // 下一分钟再推
+    await world.tick(new Date(at.getTime() + 60_000));
+    expect(reminders()).toBe(2);
+
+    const snapshot = await panel(world, 'library', 'snapshot');
+    const rhythm = (snapshot.data as { rhythm: { cronValid: boolean; cronNextAt: string | null; lastReminder: { kind: string } | null } }).rhythm;
+    expect(rhythm.cronValid).toBe(true);
+    expect(rhythm.cronNextAt).not.toBeNull();
+    expect(rhythm.lastReminder?.kind).toBe('schedule');
+    await world.stop();
+  });
+
+  it('cron 没到点不推；写错的 cron 在面板里给出错误', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const at = new Date('2026-11-25T23:30:00+08:00');
+    const world = reminderWorld(ctx, { writeCron: '30 7 * * *' }, at);
+    const host = new FakeHost();
+    await world.start(host);
+    await world.tick(at);
+    expect(host.events.map((event) => event.type)).not.toContain('ink.reminder.schedule');
+
+    ctx.persist({ writeCron: '99 * * * *' });
+    await world.tick(new Date(at.getTime() + 60_000));
+    const snapshot = await panel(world, 'library', 'snapshot');
+    const rhythm = (snapshot.data as { rhythm: { cronValid: boolean; cronError: string | null } }).rhythm;
+    expect(rhythm.cronValid).toBe(false);
+    expect(rhythm.cronError).toContain('0–59');
+    await world.stop();
+  });
+
+  it('上下文估算过阈值时提醒，冷却期内不重复', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const at = new Date('2026-11-25T23:30:00+08:00');
+    const world = reminderWorld(
+      ctx,
+      { writeCron: '', contextReminderPercent: 10, contextReminderCooldownMinutes: 60 },
+      at,
+    );
+    const host = new FakeHost();
+    host.modelFacts = { ...host.modelFacts, contextWindow: () => 100 };
+    await world.start(host);
+
+    // 100 token 的窗口，灌 30 个汉字 ≈ 30 token → 30%
+    await host.pushEvent({
+      type: 'chat.message',
+      ts: '2026-11-25T23:29:00+08:00',
+      source: 'test',
+      origin: 'external',
+      senderKey: 'user',
+      text: '一'.repeat(30),
+    } as Parameters<FakeHost['pushEvent']>[0]);
+
+    await world.tick(at);
+    expect(host.events.map((event) => event.type)).toContain('ink.reminder.context');
+
+    // 冷却期内不重复
+    await world.tick(new Date(at.getTime() + 5 * 60_000));
+    const countAfterCooldown = host.events.filter((event) => event.type === 'ink.reminder.context').length;
+    expect(countAfterCooldown).toBe(1);
+
+    // 冷却过了再提醒
+    await world.tick(new Date(at.getTime() + 61 * 60_000));
+    expect(host.events.filter((event) => event.type === 'ink.reminder.context').length).toBe(2);
+    await world.stop();
+  });
+
+  it('交接结束后提醒补写；关掉开关就不提醒', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = new ThePalestInkWorld({
+      cfg: { ...INK_DEFAULTS, handoffReminder: true },
+      timezone: 'Asia/Shanghai',
+      dataDir: ctx.dataDir,
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    world.onHandoffEnded();
+    expect(host.events.map((event) => event.type)).toContain('ink.reminder.handoff');
+
+    const off = new ThePalestInkWorld({
+      cfg: { ...INK_DEFAULTS, handoffReminder: false },
+      timezone: 'Asia/Shanghai',
+      dataDir: join(scratchDir, 'off'),
+    });
+    const quiet = new FakeHost();
+    await off.start(quiet);
+    off.onHandoffEnded();
+    expect(quiet.events.map((event) => event.type)).not.toContain('ink.reminder.handoff');
+    await world.stop();
+    await off.stop();
+  });
+
+  it('久未取用且重要度低的条目会被自动归档，置顶与重要度 5 不动', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const now = new Date('2026-11-25T12:00:00+08:00');
+    const world = new ThePalestInkWorld({
+      cfg: { ...INK_DEFAULTS, autoArchiveEnabled: true, autoArchiveAgeDays: 30, autoArchiveImportance: 1, autoArchiveConflicts: false },
+      timezone: 'Asia/Shanghai',
+      dataDir: ctx.dataDir,
+      now: () => now,
+    });
+    const host = new FakeHost();
+    await world.start(host);
+
+    const stale = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '上个月的临时安排。', importance: 1 }, CALL)));
+    const pinned = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '长期设定：语气用白话。', importance: 1, pinned: true }, CALL)));
+    const sacred = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '长期设定：称呼对方。', importance: 5 }, CALL)));
+
+    const later = new Date(now.getTime() + 40 * 86_400_000);
+    const result = await world.runMaintenance('manual', later);
+    expect(result.archived).toBe(1);
+    expect(result.decisions[0]?.id).toBe(stale);
+
+    const archiveEvents = host.events.filter((event) => event.type === 'ink.memory.archived');
+    expect(archiveEvents[0]?.text).toContain('自动归档');
+    expect(archiveEvents[0]?.text).toContain('天没被取用');
+    expect(archiveEvents[0]?.text).toContain('重要度 1');
+
+    const archived = await panel(world, 'library', 'entry', { id: stale });
+    expect((archived.data as { archiveReason: string }).archiveReason).toContain('自动归档');
+    for (const kept of [pinned, sacred]) {
+      const entry = await panel(world, 'library', 'entry', { id: kept });
+      expect((entry.data as { archiveReason: string | null }).archiveReason).toBeNull();
+    }
+    await world.stop();
+  });
+
+  it('内容重复的两条留较新的/较重要的那条，另一条归档', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const now = new Date('2026-11-25T12:00:00+08:00');
+    const world = new ThePalestInkWorld({
+      cfg: {
+        ...INK_DEFAULTS,
+        autoArchiveEnabled: true,
+        autoArchiveAgeDays: 3650,
+        autoArchiveImportance: 0,
+        autoArchiveConflicts: true,
+        conflictSimilarity: 0.82,
+      },
+      timezone: 'Asia/Shanghai',
+      dataDir: ctx.dataDir,
+      now: () => now,
+    });
+    await world.start(new FakeHost());
+
+    const important = idFrom(
+      textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。', kind: 'fact', importance: 3 }, CALL)),
+    );
+    const duplicate = idFrom(
+      textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。', kind: 'fact', importance: 1 }, CALL)),
+    );
+
+    const result = await world.runMaintenance('manual', now);
+    expect(result.archived).toBe(1);
+    expect(result.decisions[0]?.id).toBe(duplicate);
+    expect(result.decisions[0]?.reason).toContain('内容重复');
+
+    const kept = await panel(world, 'library', 'entry', { id: important });
+    expect((kept.data as { archiveReason: string | null }).archiveReason).toBeNull();
+    await world.stop();
+  });
+
+  it('自动归档总开关关掉后一条都不动', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const now = new Date('2026-11-25T12:00:00+08:00');
+    const world = new ThePalestInkWorld({
+      cfg: { ...INK_DEFAULTS, autoArchiveEnabled: false, autoArchiveAgeDays: 1, autoArchiveImportance: 4 },
+      timezone: 'Asia/Shanghai',
+      dataDir: ctx.dataDir,
+      now: () => now,
+    });
+    await world.start(new FakeHost());
+    await tool(world, 'ink_remember').handler({ text: '很久以后也不该被归档。', importance: 0 }, CALL);
+    const result = await world.runMaintenance('manual', new Date(now.getTime() + 400 * 86_400_000));
+    expect(result.archived).toBe(0);
+    await world.stop();
+  });
+});
+
 describe('淡墨 · 面板', () => {
   it('记忆库面板能看快照、检索、读单条全文', async () => {
     const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });

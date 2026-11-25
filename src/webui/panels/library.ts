@@ -39,6 +39,15 @@ const panel: WebUiPanel = {
     const embedLine = ui.h('div', 'msgline');
     sheet.body.append(stats, embedLine);
 
+    // 写记忆的节奏：只读展示；改在 World 配置页（两组配置：记忆库 / 写记忆的节奏）。
+    const rhythmBox = ui.h('div');
+    rhythmBox.style.cssText = 'margin:10px 0;padding:10px 12px;border:1px solid rgba(128,128,128,.25);border-radius:8px;';
+    const rhythmTitle = ui.h('div', 'muted', '写记忆的节奏（只读；在 World 配置里改）');
+    rhythmTitle.style.fontSize = '12px';
+    const rhythmBody = ui.h('div');
+    rhythmBox.append(rhythmTitle, rhythmBody);
+    sheet.body.append(rhythmBox);
+
     const bar = ui.rowbar();
     const query = ui.input({ type: 'search', placeholder: '关键词，空格分隔；中文按相邻两字匹配' });
     const tag = ui.input({ placeholder: '标签（可选）' });
@@ -121,7 +130,37 @@ const panel: WebUiPanel = {
       }
     };
 
+    const renderRhythm = (rhythm: LibrarySnapshot['rhythm']): void => {
+      const lines: string[] = [];
+      if (!rhythm.cron) lines.push('定时提醒：关（在配置里填 cron，例如 30 7 * * *）');
+      else if (!rhythm.cronValid) lines.push(`定时提醒：cron 写错了 —— ${rhythm.cronError ?? '无法解析'}`);
+      else lines.push(`定时提醒：${rhythm.cronText ?? rhythm.cron}（cron「${rhythm.cron}」）${rhythm.cronNextAt ? `，下次 ${when(rhythm.cronNextAt)}` : ''}`);
+      lines.push(
+        rhythm.contextPercentLimit
+          ? `上下文提醒：估到 ${rhythm.contextPercentLimit}% 时提醒（现在约 ${rhythm.estimatedPercent ?? '—'}%，${rhythm.estimatedTokens} / ${rhythm.contextWindow ?? '未知'} token，粗估）`
+          : '上下文提醒：关',
+      );
+      lines.push(rhythm.handoffReminder ? '交接后提醒补写：开' : '交接后提醒补写：关');
+      const m = rhythm.maintenance;
+      if (!m.enabled) lines.push('自动归档：关');
+      else {
+        const parts = [`${m.ageDays} 天没取用且重要度 ≤ ${m.importance}`];
+        if (m.conflicts) parts.push(`内容重复度 ≥ ${Math.round(m.similarity * 100)}% 的旧条目`);
+        parts.push('置顶与重要度 5 不自动动');
+        const tail = m.lastRunAt ? `｜上次 ${when(m.lastRunAt)} 归档 ${m.lastArchived} 条（累计 ${m.totalArchived}）` : '｜还没跑过';
+        lines.push(`自动归档：${parts.join('；')}${tail}`);
+      }
+      if (rhythm.lastReminder) {
+        const kind = rhythm.lastReminder.kind === 'schedule' ? '定时' : rhythm.lastReminder.kind === 'context' ? '上下文' : '交接';
+        lines.push(`最近一次提醒：${when(rhythm.lastReminder.at)}（${kind}）`);
+      }
+      if (m.sample.length) lines.push(`上次自动归档：${m.sample.map((item) => item.reason).join('；')}`);
+      rhythmBody.replaceChildren(...lines.map((line) => ui.h('div', 'muted', line)));
+      rhythmBody.style.cssText = 'font-size:12px;line-height:1.7;';
+    };
+
     const renderSnapshot = (snapshot: LibrarySnapshot): void => {
+      renderRhythm(snapshot.rhythm);
       stats.replaceChildren(
         ui.stat({ k: '未归档', v: snapshot.counts.live, unit: '条', accent: true }),
         ui.stat({ k: '归档', v: snapshot.counts.archived, unit: '条' }),

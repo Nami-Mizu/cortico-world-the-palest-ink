@@ -110,3 +110,21 @@ export function truncate(text: string, max: number): string {
   const chars = [...text];
   return chars.length <= max ? text : `${chars.slice(0, max).join('')}…`;
 }
+
+const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/**
+ * 粗估一段文本占多少 token：中日韩一个字算 1 个，其余 3.6 个字符算 1 个。
+ *
+ * 只用来判断「上下文是不是快满了」，不需要精确；宁可高估一点，
+ * 让提醒早到，也不要等到交接前一秒才说。
+ */
+export function estimateTokens(text: string): number {
+  let cjk = 0;
+  let other = 0;
+  for (const char of text) {
+    if (CJK_CHAR.test(char)) cjk += 1;
+    else other += 1;
+  }
+  return Math.ceil(cjk + other / 3.6);
+}

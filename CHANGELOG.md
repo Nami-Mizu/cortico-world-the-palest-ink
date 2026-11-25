@@ -1,3 +1,17 @@
+## 0.3.0
+
+- **定时提醒**：`writeCron`（5 段 cron，按 `ctx.timezone`）到点推 `ink.reminder.schedule`，可附 `writeCronNote`；同一分钟只推一次。
+- **上下文提醒**：事件流估算用量 ≥ `contextReminderPercent` 时推 `ink.reminder.context`，带冷却；拿不到 `contextWindow` 就不打扰。
+- **交接提醒**：`onHandoffEnded` 推 `ink.reminder.handoff`（preempt），并重置估算起点。
+- **自动归档**：
+  - 过期：重要度 ≤ `autoArchiveImportance` 且 ≥ `autoArchiveAgeDays` 未被取用。
+  - 重复：同种类、正文指纹 Jaccard ≥ `conflictSimilarity` 时留较重要/较新的那条。
+  - `pinned` 与重要度 5 永不自动归档；只归档不删除，归档后仍可 `ink_recall`。
+- **面板**：记忆库页新增只读「写记忆的节奏」卡片（下次触发、上下文估算、最近提醒、最近归档样本）。
+- 新增第二个配置组 `world:thepalestink.rhythm`（11 个热改项）；三个新事件，事件总数 14。
+- 新增纯函数模块 `src/cron.ts`、`src/maintenance.ts`；`tick()` / `runMaintenance()` 公开可测。
+- 测试：77 个用例（world 20 / search 13 / cron 12 / embedding 11 / maintenance 15 / vector 6）；`_dev/verify.mjs` 87 项。
+
 ## 0.2.0
 
 - **语义检索（可选）**：接入嵌入模型后，按余弦相似度排序；未配置或连不上时自动退回字面检索，不阻断写入与查找。

@@ -1,8 +1,8 @@
 {
   "name": "cortico-world-the-palest-ink",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "淡墨 · 记忆库：给 Agent 一个可以写下、检索、修订与归档的长期记忆数据库；可选接入嵌入模型做语义检索。",
+  "description": "淡墨 · 记忆库：给 Agent 一个可以写下、检索、修订与归档的长期记忆数据库；可选语义检索，带定时与上下文提醒、自动归档。",
   "license": "MIT",
   "keywords": [
     "cortico-world",

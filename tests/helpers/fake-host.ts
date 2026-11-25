@@ -4,10 +4,16 @@ import type { EventEnvelope, WorldHost, PushOptions } from 'cortico/core/types.t
 export class FakeHost implements WorldHost {
   events: EventEnvelope[] = [];
   pushDeferred(): void {}
+  /** 事件仓足够真：range/latestCursor 按 events 算，上下文估算的用例要靠它。 */
   store = {
-    get: () => undefined,
-    latestCursor: () => 0,
-    range: () => [],
+    get: (cursor: number): EventEnvelope | undefined => this.events.find((event) => event.cursor === cursor),
+    latestCursor: (): number => this.events.length,
+    range: (q: { fromCursor?: number; toCursor?: number; limit?: number }): EventEnvelope[] => {
+      const from = q.fromCursor ?? 0;
+      const to = q.toCursor ?? Number.MAX_SAFE_INTEGER;
+      const hits = this.events.filter((event) => event.cursor >= from && event.cursor <= to);
+      return q.limit ? hits.slice(-q.limit) : hits;
+    },
     around: () => [],
     grep: () => [],
   } as unknown as WorldHost['store'];

@@ -13,7 +13,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { INK_DEFAULTS } from '../src/config.ts';
+import { cronMatches, describeCron, nextCronMatch, parseCron, zonedParts } from '../src/cron.ts';
 import { EmbeddingClient } from '../src/embedding.ts';
+import { planMaintenance } from '../src/maintenance.ts';
 import { searchEntries } from '../src/search.ts';
 import { MemoryStore } from '../src/store.ts';
 import { VectorStore } from '../src/vector.ts';
@@ -341,6 +343,109 @@ function tempDir() {
 
   await world.stop();
   check('面板调用没推警告', !events.some((event) => event.type === 'warn'), events.filter((event) => event.type === 'warn').map((event) => event.text).join(' | '));
+}
+
+// ---------------------------------------------------------------- 提醒与自动归档
+{
+  const at = new Date('2026-11-25T23:30:00+08:00');
+
+  const spec = parseCron('30 7 * * *');
+  check('cron 07:30 命中', cronMatches(spec, zonedParts(new Date('2026-11-25T07:30:00+08:00'), 'Asia/Shanghai')));
+  check('cron 07:31 不命中', !cronMatches(spec, zonedParts(new Date('2026-11-25T07:31:00+08:00'), 'Asia/Shanghai')));
+  const next = nextCronMatch(spec, new Date('2026-11-25T08:00:00+08:00'), 'Asia/Shanghai');
+  check('cron 下次落在明天 07:30', next?.toISOString() === new Date('2026-11-26T07:30:00+08:00').toISOString(), String(next));
+  check('cron 描述成人话', describeCron(spec).includes('每天') && describeCron(spec).includes('07:30'), describeCron(spec));
+
+  const stale = {
+    id: 'mem_stale',
+    text: '上个月的临时安排。',
+    kind: 'note',
+    tags: [],
+    source: '',
+    importance: 1,
+    createdAt: '2026-01-01T00:00:00+08:00',
+    updatedAt: new Date(at.getTime() - 40 * 86_400_000).toISOString(),
+    pinned: false,
+    archived: false,
+    recallCount: 0,
+  };
+  const fresh = { ...stale, id: 'mem_fresh', importance: 3, updatedAt: at.toISOString() };
+  const stalePlan = planMaintenance([stale, fresh], { enabled: true, ageDays: 30, importance: 1, conflicts: false, similarity: 0.82 }, at);
+  check('过期条目被自动归档', stalePlan.length === 1 && stalePlan[0].id === 'mem_stale', JSON.stringify(stalePlan));
+
+  const dupLow = { ...stale, id: 'mem_low', importance: 1, updatedAt: at.toISOString(), text: fresh.text };
+  const conflictPlan = planMaintenance([fresh, dupLow], { enabled: true, ageDays: 3650, importance: 0, conflicts: true, similarity: 0.82 }, at);
+  check('重复内容留重要的那条', conflictPlan.length === 1 && conflictPlan[0].id === 'mem_low', JSON.stringify(conflictPlan));
+  check('冲突理由写清楚', conflictPlan[0]?.reason.includes('内容重复'), conflictPlan[0]?.reason);
+
+  const dir = tempDir();
+  const events = [];
+  const host = {
+    pushEvent: async (event) => {
+      const full = { ...event, cursor: events.length + 1 };
+      events.push(full);
+      return full;
+    },
+    store: {
+      latestCursor: () => events.length,
+      get: (cursor) => events[cursor - 1],
+      range: (q) => events.slice(Math.max(0, (q.fromCursor ?? 1) - 1)),
+    },
+    modelFacts: { model: () => 'test', accepts: () => false, contextWindow: () => 100 },
+    log: { warn: (message) => events.push({ type: 'warn', text: String(message) }) },
+  };
+  const cfg = {
+    ...INK_DEFAULTS,
+    writeCron: '* * * * *',
+    writeCronNote: '重点看项目约定。',
+    contextReminderPercent: 10,
+    contextReminderCooldownMinutes: 60,
+    autoArchiveAgeDays: 30,
+    autoArchiveImportance: 1,
+    autoArchiveConflicts: false,
+  };
+  const world = new ThePalestInkWorld({
+    cfg,
+    timezone: 'Asia/Shanghai',
+    dataDir: dir,
+    now: () => at,
+    persist: (patch) => Object.assign(cfg, patch),
+  });
+  await world.start(host);
+  const count = (type) => events.filter((event) => event.type === type).length;
+  await world.tick(at);
+  check('cron 到点推提醒', count('ink.reminder.schedule') === 1, String(count('ink.reminder.schedule')));
+  await world.tick(at);
+  check('同一分钟不重复', count('ink.reminder.schedule') === 1, String(count('ink.reminder.schedule')));
+  await world.tick(new Date(at.getTime() + 60_000));
+  check('下一分钟再推', count('ink.reminder.schedule') === 2, String(count('ink.reminder.schedule')));
+
+  await host.pushEvent({
+    type: 'chat.message',
+    ts: '2026-11-25T23:29:00+08:00',
+    source: 'test',
+    origin: 'external',
+    senderKey: 'user',
+    text: '一'.repeat(30),
+  });
+  await world.tick(new Date(at.getTime() + 2 * 60_000));
+  check('上下文过阈值提醒', count('ink.reminder.context') === 1, String(count('ink.reminder.context')));
+
+  world.onHandoffEnded();
+  check('交接后提醒补写', count('ink.reminder.handoff') === 1, String(count('ink.reminder.handoff')));
+
+  const byName = (name) => world.tools().find((tool) => tool.name === name);
+  await byName('ink_remember').handler({ text: '临时安排，很快会过时。', importance: 1 }, {});
+  const maintenance = await world.runMaintenance('manual', new Date(at.getTime() + 40 * 86_400_000));
+  check('World 自动归档过期条目', maintenance.archived === 1, JSON.stringify(maintenance.decisions));
+  check('归档推事件', count('ink.memory.archived') >= 1, String(count('ink.memory.archived')));
+
+  const snapshot = await world.webUi().invoke('library', 'snapshot', []);
+  check('面板有节奏卡', snapshot.ok === true && snapshot.data.rhythm.cronValid === true, JSON.stringify(snapshot.data?.rhythm?.cronValid));
+  check('节奏卡带下次时间', typeof snapshot.data.rhythm.cronNextAt === 'string', String(snapshot.data?.rhythm?.cronNextAt));
+  check('节奏卡报自动归档', snapshot.data.rhythm.maintenance.enabled === true);
+  check('提醒没推警告', !events.some((event) => event.type === 'warn'), events.filter((event) => event.type === 'warn').map((event) => event.text).join(' | '));
+  await world.stop();
 }
 
 // ---------------------------------------------------------------- 汇总

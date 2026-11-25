@@ -343,6 +343,13 @@ var panel2 = {
     const stats = ui.statgrid();
     const embedLine = ui.h("div", "msgline");
     sheet.body.append(stats, embedLine);
+    const rhythmBox = ui.h("div");
+    rhythmBox.style.cssText = "margin:10px 0;padding:10px 12px;border:1px solid rgba(128,128,128,.25);border-radius:8px;";
+    const rhythmTitle = ui.h("div", "muted", "\u5199\u8BB0\u5FC6\u7684\u8282\u594F\uFF08\u53EA\u8BFB\uFF1B\u5728 World \u914D\u7F6E\u91CC\u6539\uFF09");
+    rhythmTitle.style.fontSize = "12px";
+    const rhythmBody = ui.h("div");
+    rhythmBox.append(rhythmTitle, rhythmBody);
+    sheet.body.append(rhythmBox);
     const bar = ui.rowbar();
     const query = ui.input({ type: "search", placeholder: "\u5173\u952E\u8BCD\uFF0C\u7A7A\u683C\u5206\u9694\uFF1B\u4E2D\u6587\u6309\u76F8\u90BB\u4E24\u5B57\u5339\u914D" });
     const tag = ui.input({ placeholder: "\u6807\u7B7E\uFF08\u53EF\u9009\uFF09" });
@@ -419,7 +426,34 @@ var panel2 = {
         }
       }
     };
+    const renderRhythm = (rhythm) => {
+      const lines = [];
+      if (!rhythm.cron) lines.push("\u5B9A\u65F6\u63D0\u9192\uFF1A\u5173\uFF08\u5728\u914D\u7F6E\u91CC\u586B cron\uFF0C\u4F8B\u5982 30 7 * * *\uFF09");
+      else if (!rhythm.cronValid) lines.push(`\u5B9A\u65F6\u63D0\u9192\uFF1Acron \u5199\u9519\u4E86 \u2014\u2014 ${rhythm.cronError ?? "\u65E0\u6CD5\u89E3\u6790"}`);
+      else lines.push(`\u5B9A\u65F6\u63D0\u9192\uFF1A${rhythm.cronText ?? rhythm.cron}\uFF08cron\u300C${rhythm.cron}\u300D\uFF09${rhythm.cronNextAt ? `\uFF0C\u4E0B\u6B21 ${when(rhythm.cronNextAt)}` : ""}`);
+      lines.push(
+        rhythm.contextPercentLimit ? `\u4E0A\u4E0B\u6587\u63D0\u9192\uFF1A\u4F30\u5230 ${rhythm.contextPercentLimit}% \u65F6\u63D0\u9192\uFF08\u73B0\u5728\u7EA6 ${rhythm.estimatedPercent ?? "\u2014"}%\uFF0C${rhythm.estimatedTokens} / ${rhythm.contextWindow ?? "\u672A\u77E5"} token\uFF0C\u7C97\u4F30\uFF09` : "\u4E0A\u4E0B\u6587\u63D0\u9192\uFF1A\u5173"
+      );
+      lines.push(rhythm.handoffReminder ? "\u4EA4\u63A5\u540E\u63D0\u9192\u8865\u5199\uFF1A\u5F00" : "\u4EA4\u63A5\u540E\u63D0\u9192\u8865\u5199\uFF1A\u5173");
+      const m = rhythm.maintenance;
+      if (!m.enabled) lines.push("\u81EA\u52A8\u5F52\u6863\uFF1A\u5173");
+      else {
+        const parts = [`${m.ageDays} \u5929\u6CA1\u53D6\u7528\u4E14\u91CD\u8981\u5EA6 \u2264 ${m.importance}`];
+        if (m.conflicts) parts.push(`\u5185\u5BB9\u91CD\u590D\u5EA6 \u2265 ${Math.round(m.similarity * 100)}% \u7684\u65E7\u6761\u76EE`);
+        parts.push("\u7F6E\u9876\u4E0E\u91CD\u8981\u5EA6 5 \u4E0D\u81EA\u52A8\u52A8");
+        const tail = m.lastRunAt ? `\uFF5C\u4E0A\u6B21 ${when(m.lastRunAt)} \u5F52\u6863 ${m.lastArchived} \u6761\uFF08\u7D2F\u8BA1 ${m.totalArchived}\uFF09` : "\uFF5C\u8FD8\u6CA1\u8DD1\u8FC7";
+        lines.push(`\u81EA\u52A8\u5F52\u6863\uFF1A${parts.join("\uFF1B")}${tail}`);
+      }
+      if (rhythm.lastReminder) {
+        const kind2 = rhythm.lastReminder.kind === "schedule" ? "\u5B9A\u65F6" : rhythm.lastReminder.kind === "context" ? "\u4E0A\u4E0B\u6587" : "\u4EA4\u63A5";
+        lines.push(`\u6700\u8FD1\u4E00\u6B21\u63D0\u9192\uFF1A${when(rhythm.lastReminder.at)}\uFF08${kind2}\uFF09`);
+      }
+      if (m.sample.length) lines.push(`\u4E0A\u6B21\u81EA\u52A8\u5F52\u6863\uFF1A${m.sample.map((item) => item.reason).join("\uFF1B")}`);
+      rhythmBody.replaceChildren(...lines.map((line) => ui.h("div", "muted", line)));
+      rhythmBody.style.cssText = "font-size:12px;line-height:1.7;";
+    };
     const renderSnapshot = (snapshot) => {
+      renderRhythm(snapshot.rhythm);
       stats.replaceChildren(
         ui.stat({ k: "\u672A\u5F52\u6863", v: snapshot.counts.live, unit: "\u6761", accent: true }),
         ui.stat({ k: "\u5F52\u6863", v: snapshot.counts.archived, unit: "\u6761" }),
