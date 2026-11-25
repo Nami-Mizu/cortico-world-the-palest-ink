@@ -30,7 +30,7 @@
 - 节奏相关的 11 个配置在第二个配置组 `INK_RHYTHM_CONFIG_GROUP`（id `world:thepalestink.rhythm`，owner 仍是 `world:thepalestink`；路径都落在 `worlds.thepalestink.` 下）。`webUi().config` 是 `[INK_CONFIG_GROUP, INK_RHYTHM_CONFIG_GROUP]` 两组一起给。
 - cron 解析在 `src/cron.ts` 是纯函数：`parseCron` 五段（分 时 日 月 周），支持 `*`/`?`/数字/`a-b`/`a,b`/`/n`，周日 `7` 折成 `0`；日与周同时限定时「满足其一」；`nextCronMatch` 逐分钟扫（最多 370 天）。**没有秒级、没有 `@daily` 别名、不处理夏令时**。
 - 调度器在 `world.start()` 里 `setInterval`（默认 30 秒，`unref` 掉，不吊住宿主），调 `tick()`；`tick()` 是公开的、`now` 可注入，测试别真等。同一分钟只推一次（key 是 `YYYY-MM-DDTHH:mm`）。
-- 三种提醒：`writeCron` 到点（`ink.reminder.schedule`）、上下文估算过 `contextReminderPercent`（`ink.reminder.context`，冷却 `contextReminderCooldownMinutes`）、`onHandoffEnded`（`ink.reminder.handoff`，`preempt`）。**宿主没有「交接开始前」钩子**，交接提醒只能落在交接后第一批；`onHandoffEnded` 同时把 `handoffCursor` 移到最新，重置估算。
+- 三种提醒：`writeCron` 到点（`ink.reminder.schedule`）、上下文估算过 `contextReminderPercent`（`ink.reminder.context`，冷却 `contextReminderCooldownMinutes`）、`onHandoffEnded`（`ink.reminder.handoff`，`preempt`）。默认阈值是 **20**，不是 75：宿主（Coopanion）在窗口两成多就交接，上下文几乎到不了更高，调高等于永远不提醒。**宿主没有「交接开始前」钩子**，交接提醒只能落在交接后第一批；`onHandoffEnded` 同时把 `handoffCursor` 移到最新，重置估算。
 - 上下文 token 是**估算**（`estimateTokens`：中日韩一字一 token、其余 3.6 字符一 token，向上取整），数据来自 `host.store.range({fromCursor})` 的事件文字，只取最后 2000 条；工具回执不在事件里，所以只会低估。别把它当宿主的精确用量。
 - 自动归档判定在 `src/maintenance.ts` 是纯函数 `planMaintenance(entries, settings, now)`，`world.runMaintenance()` 才落盘。两条规则：`importance <= autoArchiveImportance` 且按 `lastRecalledAt ?? updatedAt` 算 ≥ `autoArchiveAgeDays`（stale）；同 kind、Jaccard ≥ `conflictSimilarity` 的取较旧/较不重要者（conflict）。**置顶与重要度 5 永不自动归档**（`SACRED_IMPORTANCE = 5`）。
 - 自动归档只调 `store.archive()`（不 purge），所以归档后仍能 `ink_recall` 读到；容量淘汰、自动归档共用 `archiveReason` 字段，别混用。

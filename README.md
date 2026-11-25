@@ -125,7 +125,7 @@
 | --- | --- | --- |
 | `writeCron` | `''`（关） | 定时提醒的 cron，五段（分 时 日 月 周），如 `30 7 * * *`；留空不提醒 |
 | `writeCronNote` | `''`（空） | 定时提醒时附在后面的自定义提示，比如「重点回顾项目约定」 |
-| `contextReminderPercent` | `75` | 上下文估算到这个百分比时提醒（0–95，0 = 关） |
+| `contextReminderPercent` | `20` | 上下文估算到窗口的百分之几时提醒（0–95，0 = 关）；宿主约 20% 多就交接，所以默认 20 |
 | `contextReminderCooldownMinutes` | `60` | 两次上下文提醒之间至少隔多久（5–1440 分钟） |
 | `handoffReminder` | `true` | 上下文交接完成后提醒补写记忆 |
 | `autoArchiveEnabled` | `true` | 自动归档总开关 |

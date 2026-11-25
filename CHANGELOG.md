@@ -1,3 +1,7 @@
+## 0.7.1
+
+- 上下文提醒的默认阈值从 `75` 改成 `20`：宿主（Coopanion）在上下文窗口用到两成多时就交接，阈值 75 等于永远等不到；20 让提醒落在交接前后。
+- 提示词补一句「这条提醒来得偏早、往往紧挨着交接」；配置项描述与 README / AGENTS / 设计文档同步。
 ## 0.7.0
 
 - **情绪记忆**：条目新增 `mood` 字段（`warm` 温柔 / `happy` 开心 / `low` 低落 / `serious` 认真 / `playful` 玩笑 / `clingy` 黏人 / `neutral` 平静，默认 `neutral`）。`ink_remember` / `ink_amend` 可选填 `mood`，`ink_search` 可按情绪过滤；旧存档缺这个字段的按 `neutral` 读。

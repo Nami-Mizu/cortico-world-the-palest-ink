@@ -123,7 +123,7 @@ export const INK_DEFAULTS: InkConfigSection = {
   // 默认不按钟点提醒：几点该写记忆是人的作息，不该由包替人定。
   writeCron: '',
   writeCronNote: '',
-  contextReminderPercent: 75,
+  contextReminderPercent: 20,
   contextReminderCooldownMinutes: 60,
   handoffReminder: true,
 
@@ -341,7 +341,7 @@ export const INK_RHYTHM_CONFIG_GROUP: ConfigGroup = {
         type: 'integer',
         title: '上下文阈值（%）',
         description:
-          '估到上下文窗口用了几成时提醒写记忆；0 = 不提醒。估算按「中日韩一字一 token、其余 3.6 字符一 token」粗算，宁可早提醒。',
+          '估到上下文窗口用了几成时提醒写记忆；0 = 不提醒。宿主（Coopanion）通常在窗口两成多就交接，上下文很少用到更高，所以默认 20。估算按「中日韩一字一 token、其余 3.6 字符一 token」粗算。',
         minimum: 0,
         maximum: 95,
         'x-hot': true,
