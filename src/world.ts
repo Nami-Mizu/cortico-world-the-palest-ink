@@ -1184,10 +1184,23 @@ export class ThePalestInkWorld implements World {
     }
     this.lastBackup = backup;
     this.lastImportAt = nowIso(this.opts.timezone, this.now());
-    if (this.semanticEnabled() && this.opts.cfg.embedAutoReindex) {
-      void this.backfill(AUTO_BACKFILL_LIMIT).catch(() => undefined);
+    // 导入是人工动作：语义开着就直接补一次，不受 embedAutoReindex（那是「启动时」的开关）限制。
+    const vectorize = this.startVectorize();
+    if (vectorize.started) void this.backfill(Number.MAX_SAFE_INTEGER).catch(() => undefined);
+    return { ...this.planSummary(plan), imported, backup, counts: this.store.counts(), vectorize };
+  }
+
+  /** 数一数还有多少条没向量，并说明这次要不要补；真正的补在 backfill()。 */
+  private startVectorize(): { started: boolean; pending: number; reason?: string } {
+    const pending = this.store.live().filter((entry) => !this.vectors.get(entry.id)).length;
+    if (!this.semanticEnabled()) {
+      return { started: false, pending, reason: '语义检索没开（开关在「嵌入」页）；条目已导入，向量等开了之后补。' };
     }
-    return { ...this.planSummary(plan), imported, backup, counts: this.store.counts() };
+    if (!this.semanticConfigured()) {
+      return { started: false, pending, reason: '嵌入还没配好（地址/模型/密钥）；条目已导入，配好后在「嵌入」页点「重建向量」。' };
+    }
+    if (!pending) return { started: false, pending, reason: '所有条目都已有向量。' };
+    return { started: true, pending };
   }
 
   private planSummary(plan: ImportPlan): Record<string, unknown> {

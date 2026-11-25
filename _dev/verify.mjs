@@ -394,6 +394,23 @@ function tempDir() {
   );
   check('星图按种类过滤', (await invoke('starmap', 'map', [{ kind: 'todo' }])).data.points.length === 0);
 
+  // 导入后主动补向量：语义开着就别等下一次启动，也不看 embedAutoReindex。
+  const imported = await invoke('data', 'import', [
+    {
+      json: JSON.stringify({
+        schema: 1,
+        app: 'thepalestink',
+        entries: [{ id: 'mem_import_vec', text: '对方养了一只叫团子的猫。', kind: 'fact' }],
+      }),
+      mode: 'merge',
+    },
+  ]);
+  check('导入成功并提示补向量', imported.ok === true && imported.data.imported === 1 && imported.data.vectorize?.started === true, JSON.stringify(imported.data?.vectorize));
+  for (let attempt = 0; attempt < 200 && world.vectors.count() < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  check('导入后补上了新向量', world.vectors.count() === 2, `count=${world.vectors.count()}`);
+
   await world.stop();
   check('面板调用没推警告', !events.some((event) => event.type === 'warn'), events.filter((event) => event.type === 'warn').map((event) => event.text).join(' | '));
 }

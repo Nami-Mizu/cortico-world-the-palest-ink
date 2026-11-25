@@ -1288,7 +1288,8 @@ var panel4 = {
         ]);
         if (!result.ok || !result.data) throw new Error(result.error ?? "\u5BFC\u5165\u5931\u8D25\u3002");
         const data = result.data;
-        importMsg.textContent = data.note ? data.note : `\u5DF2\u5BFC\u5165 ${data.imported} \u6761\uFF08\u8DF3\u8FC7 ${data.skipped}\uFF0C\u91CD\u590D ${data.duplicateCount}\uFF0C\u65E0\u6548 ${data.invalid}\uFF09\u3002${data.backup ? `\u5907\u4EFD\uFF1A${data.backup}` : ""}`;
+        const vectorLine = data.vectorize?.started ? `\u5DF2\u5F00\u59CB\u8865\u5411\u91CF\uFF1A${data.vectorize.pending} \u6761\u5F85\u5EFA\uFF0C\u5B8C\u6210\u540E\u300C\u5D4C\u5165\u300D\u9875\u7684\u5DF2\u5EFA\u5411\u91CF\u4F1A\u66F4\u65B0\u3002` : data.vectorize?.reason ? `\u5411\u91CF\uFF1A${data.vectorize.reason}` : "";
+        importMsg.textContent = data.note ? data.note : `\u5DF2\u5BFC\u5165 ${data.imported} \u6761\uFF08\u8DF3\u8FC7 ${data.skipped}\uFF0C\u91CD\u590D ${data.duplicateCount}\uFF0C\u65E0\u6548 ${data.invalid}\uFF09\u3002${data.backup ? `\u5907\u4EFD\uFF1A${data.backup}` : ""}${vectorLine ? ` ${vectorLine}` : ""}`;
         importMsg.classList.remove("bad");
         previewBox.replaceChildren();
         importBtn.disabled = true;

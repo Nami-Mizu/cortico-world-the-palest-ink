@@ -220,9 +220,14 @@ const panel: WebUiPanel = {
         ]);
         if (!result.ok || !result.data) throw new Error(result.error ?? '导入失败。');
         const data = result.data;
+        const vectorLine = data.vectorize?.started
+          ? `已开始补向量：${data.vectorize.pending} 条待建，完成后「嵌入」页的已建向量会更新。`
+          : data.vectorize?.reason
+            ? `向量：${data.vectorize.reason}`
+            : '';
         importMsg.textContent = data.note
           ? data.note
-          : `已导入 ${data.imported} 条（跳过 ${data.skipped}，重复 ${data.duplicateCount}，无效 ${data.invalid}）。${data.backup ? `备份：${data.backup}` : ''}`;
+          : `已导入 ${data.imported} 条（跳过 ${data.skipped}，重复 ${data.duplicateCount}，无效 ${data.invalid}）。${data.backup ? `备份：${data.backup}` : ''}${vectorLine ? ` ${vectorLine}` : ''}`;
         importMsg.classList.remove('bad');
         previewBox.replaceChildren();
         importBtn.disabled = true;

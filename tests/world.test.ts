@@ -786,6 +786,10 @@ describe('淡墨 · 0.6.0：静音、查重与导入导出', () => {
     const imported = await panel(world, 'data', 'import', { json: incoming, mode: 'merge' });
     expect((imported.data as { imported: number }).imported).toBe(1);
     expect((imported.data as { backup: string | null }).backup).toContain('.bak-');
+    // 语义没开：导入照常落盘，向量留给「嵌入」页，回执里要说明为什么没补。
+    const vectorize = (imported.data as { vectorize: { started: boolean; pending: number; reason?: string } }).vectorize;
+    expect(vectorize.started).toBe(false);
+    expect(vectorize.reason).toContain('语义检索没开');
 
     const after = await panel(world, 'data', 'status');
     expect((after.data as { counts: { live: number } }).counts.live).toBe(2);
@@ -797,6 +801,31 @@ describe('淡墨 · 0.6.0：静音、查重与导入导出', () => {
     const replaced = await panel(world, 'data', 'import', { json: incoming, mode: 'replace', confirm: '替换' });
     expect(replaced.ok).toBe(true);
     expect((replaced.data as { counts: { live: number } }).counts.live).toBe(1);
+    await world.stop();
+  });
+
+  it('语义开着时：导入后主动补一次向量，不受 embedAutoReindex 限制', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = semanticWorld(ctx, { fetchImpl: fixedVectorFetch([1, 0, 0]) });
+    await world.start(new FakeHost());
+    const vectorCount = async (): Promise<number> => {
+      const status = await panel(world, 'data', 'status');
+      return (status.data as { vectorCount: number }).vectorCount;
+    };
+    idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照。' }, CALL)));
+    await until(async () => (await vectorCount()) === 1);
+
+    const incoming = JSON.stringify({
+      schema: 1,
+      app: 'thepalestink',
+      entries: [{ id: 'mem_import_vec', text: '对方养了一只叫团子的猫。', kind: 'fact' }],
+    });
+    const imported = await panel(world, 'data', 'import', { json: incoming, mode: 'merge' });
+    expect((imported.data as { imported: number }).imported).toBe(1);
+    const vectorize = (imported.data as { vectorize: { started: boolean; pending: number } }).vectorize;
+    expect(vectorize.started).toBe(true);
+    expect(vectorize.pending).toBe(1);
+    await until(async () => (await vectorCount()) === 2);
     await world.stop();
   });
 });

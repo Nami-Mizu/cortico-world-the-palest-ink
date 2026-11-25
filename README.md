@@ -160,9 +160,9 @@
 
 ```bash
 pnpm typecheck                 # 主项目 + 面板两个 tsconfig
-pnpm test                      # vitest，114 个用例
+pnpm test                      # vitest，115 个用例
 pnpm build:webui               # esbuild 打 dist/webui.js
-node _dev/verify.mjs           # 无依赖行为自检（110 项，不需要 pnpm）
+node _dev/verify.mjs           # 无依赖行为自检（112 项，不需要 pnpm）
 node _dev/gen-describe.mjs     # 重新生成 describe.json
 ```
 

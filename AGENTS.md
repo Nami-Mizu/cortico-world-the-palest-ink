@@ -62,7 +62,9 @@
 - 走面板（`invoke('data', ...)`），**不走工具**：几百条 JSON 塞不进工具参数，也不该让模型转述整份存档。
 - `src/transfer.ts` 是纯函数：`buildSnapshot()` / `parseSnapshot()` / `planImport()` / `normalizeCandidate()`。预演与真正导入**共用** `planImport`，所以面板上看到的数字就是会写进去的数字；改导入逻辑只改这一处。
 - `merge` 是本地优先：同 id 跳过、内容与本地几乎重复跳过、只补新的；`replace` 让本地只剩文件里那些，**必须**收到 `confirm === "替换"`（`collapse()` 后比较），且写盘前 `store.backup()`。
-- 快照只含正文与元数据（不含向量）；导入后语义检索按 `embedAutoReindex` 决定是否补向量。`replace` 之后要 `vectors.prune(new Set(存活 id))`，否则旧 id 的向量会残留。
+- 快照只含正文与元数据（不含向量）。`replace` 之后要 `vectors.prune(new Set(存活 id))`，否则旧 id 的向量会残留。
+- **导入成功后主动补向量**：只要 `semanticEnabled` 且嵌入配好，`importMemory()` 末尾就 `backfill(Number.MAX_SAFE_INTEGER)` 跑一次全量（`startVectorize()` 决定要不要跑、还剩几条）；**不看 `embedAutoReindex`**——那个开关只管「启动时补」。语义没开/没配好时回 `vectorize.reason` 说明原因，别静默跳过。
+- 补向量是后台跑（`void`），别在导入回执里等它；要看结果就刷新「嵌入」页或 `data:status` 的 `vectorCount`。
 - 导入上限 `MAX_IMPORT_ENTRIES = 5000`；非法条目（缺 id/正文）只计数，不中断整批。
 
 ## 记忆星图
@@ -78,9 +80,9 @@
 
 ## 验证到哪一级
 
-- 行为自检：`node _dev/verify.mjs` → **110 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、八个工具、时效与过期、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档、星图布局、查重、静音、导入导出）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance/dedupe/transfer/starmap-layout 后先跑它。
+- 行为自检：`node _dev/verify.mjs` → **112 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、八个工具、时效与过期、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档、星图布局、查重、静音、导入导出）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance/dedupe/transfer/starmap-layout 后先跑它。
 - 类型检查：`tsc --noEmit`（主项目）与 `tsc -p tsconfig.webui.json --noEmit`（面板）**都通过，0 错误**。
-- 单元测试：`vitest run` → **114/114 通过**（`tests/world.test.ts` 29、`tests/dedupe.test.ts` 9、`tests/transfer.test.ts` 6、`tests/starmap-layout.test.ts` 10、`tests/search.test.ts` 13、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
+- 单元测试：`vitest run` → **115/115 通过**（`tests/world.test.ts` 30、`tests/dedupe.test.ts` 9、`tests/transfer.test.ts` 6、`tests/starmap-layout.test.ts` 10、`tests/search.test.ts` 13、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
 - 面板构建：`dist/webui.js` **约 60.5kb（61,990 B）**，esbuild 无警告。
 - **`pnpm` 曾经静默挂住，已修**：`package.json` 里锁的 `packageManager: pnpm@11.28.6` 与本机 12.23.0 不一致，pnpm 10+ 会按字段去取旧版，取不到就无声卡死（`pnpm --version` 正常，因为它不读项目）。改成 `pnpm@12.23.0` 后 `pnpm install` / `pnpm typecheck` / `pnpm test` / `pnpm build:webui` 全部正常，`pnpm-lock.yaml` 已入库。**改这个字段前先看 `pnpm --version`。**
 - **不要用 PowerShell 文本管道写文件**：会话里有个防双重编码的插件，`Get-Content x | Set-Content x`、`Out-File`、`cat x > y`、`Tee-Object` 会被直接拒绝执行（看起来像「用户拒绝了命令」），就算跑通也可能把中文按 ANSI 写坏。读用 `read`、写用 `write`/`edit`；脚本里必须读写文件时用 `[IO.File]::ReadAllText` / `[IO.File]::WriteAllText` 配 `[Text.UTF8Encoding]::new($false)`。

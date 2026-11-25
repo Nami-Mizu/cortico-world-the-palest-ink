@@ -1,3 +1,10 @@
+## 0.6.1
+
+- **导入后主动补向量**：只要语义开着且配好了，`data:import` 完成后立即启动一次**全量**补向量（`backfill(MAX_SAFE_INTEGER)`），不再看 `embedAutoReindex`（那个开关只管「启动时补」），也不受启动时 200 条的上限。
+- 回执与面板会告诉这次补不补、还剩几条：`ImportResponse.vectorize = { started, pending, reason? }`；语义没开或没配好时给出原因（「语义检索没开」/「嵌入还没配好」）。
+- 导入的写入路径没变：仍然先 `store.backup()`，`merge` 本地优先、`replace` 要打「替换」。
+- 测试：115 个用例（world 30）；`_dev/verify.mjs` 112 项。
+
 ## 0.6.0
 
 - **事件默认静音**：新增配置 `eventLevel`（`quiet` / `normal`，默认 `quiet`）。`quiet` 只发系统事件（`loaded`、`store.recovered`、`reminder.*`、`embed.*`、`evicted`、`maintenance.swept`）；`normal` 才把 `added` / `amended` / `recalled` / `purged` / `archived` 这些「自己动作的回声」也发出来。`describe.json` 仍声明全部 15 个事件。

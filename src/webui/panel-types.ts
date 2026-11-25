@@ -248,10 +248,18 @@ export interface ImportSummary {
   local?: PanelCounts;
 }
 
+/** 导入之后要不要补向量、还剩几条没补。 */
+export interface ImportVectorize {
+  started: boolean;
+  pending: number;
+  reason?: string;
+}
+
 export interface ImportResponse extends ImportSummary {
   imported: number;
   backup: string | null;
   counts?: PanelCounts;
+  vectorize?: ImportVectorize;
   note?: string;
 }
 
