@@ -211,6 +211,50 @@ export interface SecretResponse {
   name: string;
 }
 
+/** 「数据」页的现状。 */
+export interface DataStatus {
+  counts: PanelCounts;
+  expired: number;
+  storeFile: string;
+  vectorFile: string;
+  entriesBytes: number;
+  vectorCount: number;
+  lastBackup: string | null;
+  lastImportAt: string | null;
+  maxImportEntries: number;
+  schema: number;
+}
+
+export interface ExportResponse {
+  filename: string;
+  json: string;
+  exported: number;
+  archived: number;
+  bytes: number;
+  note: string;
+}
+
+/** 导入预演与执行共用的摘要。 */
+export interface ImportSummary {
+  mode: 'merge' | 'replace';
+  incoming: number;
+  added: number;
+  skipped: number;
+  duplicates: Array<{ id: string; of: string; similarity: number }>;
+  duplicateCount: number;
+  invalid: number;
+  samples: Array<{ id: string; text: string }>;
+  exportedAt?: string;
+  local?: PanelCounts;
+}
+
+export interface ImportResponse extends ImportSummary {
+  imported: number;
+  backup: string | null;
+  counts?: PanelCounts;
+  note?: string;
+}
+
 export interface PanelResult<T> {
   ok: boolean;
   data?: T;

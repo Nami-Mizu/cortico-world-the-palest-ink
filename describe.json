@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "ink_remember",
-      "description": "把一条值得长期记住的事写进记忆库，返回条目 id。正文用一句到几句话写清「谁、什么时候、发生了什么、为什么重要」；不要写寒暄、不要写自己刚读过的原文。标签选稳定的名词（人名、项目、主题），重要度 0–5：0 = 随手记，3 = 以后会反复用到，5 = 长期设定。同一件事已经记过时用 ink_amend 改，不要重复写。只是暂时有效的（行程、临时安排、会变的偏好）给 expiresInDays 标个大概天数；到期会提醒你决定续期还是归档。",
+      "description": "把一条值得长期记住的事写进记忆库，返回条目 id。正文用一句到几句话写清「谁、什么时候、发生了什么、为什么重要」；不要写寒暄、不要写自己刚读过的原文。标签选稳定的名词（人名、项目、主题），重要度 0–5：0 = 随手记，3 = 以后会反复用到，5 = 长期设定。同一件事已经记过时用 ink_amend 改，不要重复写。只是暂时有效的（行程、临时安排、会变的偏好）给 expiresInDays 标个大概天数；到期会提醒你决定续期还是归档。写入前会查重：如果和已有条目几乎重复，这次不写，回执会给出旧 id 与相似度——改旧的用 ink_amend；确认是另一件事时再带 force 重写。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -47,6 +47,10 @@
             "minimum": 0,
             "maximum": 3650,
             "description": "大概有效多少天；0 或省略 = 不过期。到期不会自动删，会在整理时间提醒你处理。"
+          },
+          "force": {
+            "type": "boolean",
+            "description": "查重拦下时仍然写：只在确认「这是另一件事，只是说法像」时用；默认 false。"
           }
         },
         "required": [
@@ -377,6 +381,14 @@
       "description": {
         "zh": "容量到顶，最久没被取用的条目被挤进归档。",
         "en": "Capacity reached; the least recently used entries were pushed into the archive."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "ink.maintenance.swept",
+      "description": {
+        "zh": "一轮自动整理结束：报归档了几条（久未取用 / 内容重复各几条）与最多五条样本，不逐条发。",
+        "en": "One automatic sweep finished: reports how many were archived (stale / duplicate), with up to five samples, instead of one event per entry."
       },
       "trigger": "flush"
     },

@@ -1095,9 +1095,228 @@ ${tags}
 };
 var starmap_default = panel3;
 
+// src/webui/panels/data.ts
+function textOf4(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function money(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+function download(filename, text) {
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1e3);
+}
+var panel4 = {
+  async mount(ctx) {
+    const ui = ctx.ui;
+    const sheet = ui.sheet({
+      title: "\u6570\u636E",
+      en: "Import / Export",
+      desc: "\u5BFC\u51FA\u4E00\u4EFD JSON \u5FEB\u7167\uFF1B\u6216\u4ECE\u5FEB\u7167\u5BFC\u5165\u3002\u5BFC\u5165\u5148\u9884\u6F14\uFF0C\u5199\u76D8\u524D\u81EA\u52A8\u5907\u4EFD\uFF0C\u4E0D\u4F1A\u6084\u6084\u8986\u76D6\u3002"
+    });
+    ctx.root.append(sheet.el);
+    const stats = ui.statgrid();
+    sheet.body.append(stats);
+    const statusLine = ui.msgline();
+    sheet.body.append(statusLine);
+    const exportBar = ui.rowbar();
+    const includeArchived = ui.checkbox("\u542B\u5F52\u6863\u6761\u76EE", { checked: true });
+    const exportBtn = ui.button("\u5BFC\u51FA JSON", {
+      variant: "primary",
+      onClick: () => void doExport()
+    });
+    exportBar.append(includeArchived.el, exportBtn);
+    sheet.body.append(ui.section("\u5BFC\u51FA", "\u5FEB\u7167\u542B\u6B63\u6587\u4E0E\u5143\u6570\u636E\uFF08id\u3001\u65F6\u95F4\u3001\u6807\u7B7E\u3001\u6709\u6548\u671F\uFF09\uFF1B\u4E0D\u542B\u5411\u91CF\u3002"), exportBar);
+    const exportMsg = ui.msgline();
+    sheet.body.append(exportMsg);
+    const importSection = ui.section(
+      "\u5BFC\u5165",
+      "\u5408\u5E76 = \u672C\u5730\u4F18\u5148\uFF1A\u540C id\u3001\u5185\u5BB9\u51E0\u4E4E\u91CD\u590D\u7684\u90FD\u8DF3\u8FC7\uFF0C\u53EA\u8865\u65B0\u7684\u3002\u8986\u76D6 = \u8BA9\u672C\u5730\u53EA\u5269\u6587\u4EF6\u91CC\u90A3\u4E9B\uFF08\u5199\u76D8\u524D\u4E00\u5B9A\u5907\u4EFD\uFF09\u3002"
+    );
+    sheet.body.append(importSection);
+    const file = document.createElement("input");
+    file.type = "file";
+    file.accept = ".json,application/json";
+    file.style.cssText = "max-width:100%;";
+    const mode = ui.select({
+      options: [
+        { value: "merge", label: "\u5408\u5E76\uFF08\u672C\u5730\u4F18\u5148\uFF09" },
+        { value: "replace", label: "\u8986\u76D6\uFF08\u6E05\u7A7A\u672C\u5730\uFF09" }
+      ]
+    });
+    const confirm = ui.input({ placeholder: "\u8986\u76D6\u5BFC\u5165\u65F6\u5728\u8FD9\u91CC\u6253\u300C\u66FF\u6362\u300D" });
+    confirm.style.display = "none";
+    const previewBtn = ui.button("\u9884\u6F14", {
+      onClick: () => void doPreview()
+    });
+    const importBtn = ui.button("\u6267\u884C\u5BFC\u5165", { variant: "primary", onClick: () => void doImport() });
+    importBtn.disabled = true;
+    const importBar = ui.rowbar();
+    importBar.append(file, mode, confirm, previewBtn, importBtn);
+    importSection.append(importBar);
+    const importMsg = ui.msgline();
+    importSection.append(importMsg);
+    const previewBox = ui.h("div");
+    previewBox.style.cssText = "margin-top:10px;";
+    importSection.append(previewBox);
+    let payload = "";
+    let previewMode = "";
+    const renderStatus = (data) => {
+      stats.replaceChildren(
+        ui.stat({ k: "\u672A\u5F52\u6863", v: data.counts.live, unit: "\u6761", accent: true }),
+        ui.stat({ k: "\u5DF2\u5F52\u6863", v: data.counts.archived, unit: "\u6761" }),
+        ui.stat({ k: "\u5B58\u6863\u5927\u5C0F", v: money(data.entriesBytes) }),
+        ui.stat({ k: "\u5411\u91CF", v: data.vectorCount, unit: "\u6761" })
+      );
+      statusLine.textContent = `\u5B58\u6863\uFF1A${data.storeFile}\uFF5C\u5411\u91CF\uFF1A${data.vectorFile}`;
+      statusLine.title = statusLine.textContent;
+      const bits = [];
+      if (data.lastImportAt) bits.push(`\u4E0A\u6B21\u5BFC\u5165 ${data.lastImportAt.slice(0, 16).replace("T", " ")}`);
+      if (data.lastBackup) bits.push(`\u5907\u4EFD ${data.lastBackup}`);
+      if (data.expired) bits.push(`\u8FC7\u671F\u5F85\u6574\u7406 ${data.expired} \u6761`);
+      if (bits.length) exportMsg.textContent = bits.join("\uFF5C");
+    };
+    const refresh = async () => {
+      try {
+        const result = await ctx.invoke("status", []);
+        if (!result.ok || !result.data) throw new Error(result.error ?? "\u8BFB\u4E0D\u5230\u72B6\u6001\u3002");
+        renderStatus(result.data);
+      } catch (error) {
+        statusLine.textContent = `\u8BFB\u72B6\u6001\u5931\u8D25\uFF1A${textOf4(error)}`;
+        statusLine.classList.add("bad");
+      }
+    };
+    const doExport = async () => {
+      const busy = ui.busy("\u5BFC\u51FA", "\u6253\u5305\u5FEB\u7167");
+      try {
+        const result = await ctx.invoke("export", [
+          { includeArchived: includeArchived.checked }
+        ]);
+        if (!result.ok || !result.data) throw new Error(result.error ?? "\u5BFC\u51FA\u5931\u8D25\u3002");
+        const data = result.data;
+        download(data.filename, data.json);
+        exportMsg.textContent = `\u5DF2\u5BFC\u51FA ${data.exported} \u6761\uFF08\u5F52\u6863 ${data.archived} \u6761\uFF0C${money(data.bytes)}\uFF09\uFF1A${data.filename}`;
+        exportMsg.classList.remove("bad");
+      } catch (error) {
+        exportMsg.textContent = `\u5BFC\u51FA\u5931\u8D25\uFF1A${textOf4(error)}`;
+        exportMsg.classList.add("bad");
+      } finally {
+        busy.dispose();
+      }
+    };
+    const renderPreview = (data) => {
+      previewBox.replaceChildren();
+      const head = ui.h(
+        "div",
+        void 0,
+        `\u9884\u6F14\uFF1A\u6587\u4EF6 ${data.incoming} \u6761 \u2192 \u4F1A\u5199 ${data.added} \u6761\uFF0C\u540C id \u8DF3\u8FC7 ${data.skipped} \u6761\uFF0C\u5185\u5BB9\u91CD\u590D\u8DF3\u8FC7 ${data.duplicateCount} \u6761\uFF0C\u65E0\u6548 ${data.invalid} \u6761\u3002`
+      );
+      head.style.marginBottom = "6px";
+      previewBox.append(head);
+      if (data.duplicates.length) {
+        const dupTitle = ui.h("div", "muted", "\u50CF\u91CD\u590D\u7684\uFF1A");
+        dupTitle.style.fontSize = "12px";
+        previewBox.append(dupTitle);
+        const list = ui.log({ max: 8, maxHeight: "140px", empty: "\uFF08\u6CA1\u6709\uFF09" });
+        for (const item of data.duplicates) list.append(`${item.id} \u2248 ${item.of}\uFF08${item.similarity}%\uFF09`);
+        previewBox.append(list.el);
+      }
+      if (data.samples.length) {
+        const sampleTitle = ui.h("div", "muted", "\u4F1A\u5199\u8FDB\u53BB\u7684\uFF1A");
+        sampleTitle.style.fontSize = "12px";
+        previewBox.append(sampleTitle);
+        const list = ui.log({ max: 8, maxHeight: "160px", empty: "\uFF08\u6CA1\u6709\uFF09" });
+        for (const item of data.samples) list.append(`${item.id}\uFF1A${item.text}`);
+        previewBox.append(list.el);
+      }
+    };
+    const doPreview = async () => {
+      const chosen = file.files?.[0];
+      if (!chosen) {
+        importMsg.textContent = "\u5148\u9009\u4E00\u4E2A JSON \u5FEB\u7167\u6587\u4EF6\u3002";
+        importMsg.classList.add("bad");
+        return;
+      }
+      const busy = ui.busy("\u9884\u6F14", chosen.name);
+      try {
+        payload = await chosen.text();
+        previewMode = mode.value === "replace" ? "replace" : "merge";
+        const result = await ctx.invoke("preview", [
+          { json: payload, mode: previewMode }
+        ]);
+        if (!result.ok || !result.data) throw new Error(result.error ?? "\u9884\u6F14\u5931\u8D25\u3002");
+        renderPreview(result.data);
+        importMsg.textContent = "\u9884\u6F14\u5B8C\u6210\uFF1B\u786E\u8BA4\u6570\u5B57\u540E\u70B9\u300C\u6267\u884C\u5BFC\u5165\u300D\u3002";
+        importMsg.classList.remove("bad");
+        importBtn.disabled = result.data.added === 0;
+        confirm.style.display = previewMode === "replace" ? "" : "none";
+      } catch (error) {
+        previewBox.replaceChildren();
+        importMsg.textContent = `\u9884\u6F14\u5931\u8D25\uFF1A${textOf4(error)}`;
+        importMsg.classList.add("bad");
+        importBtn.disabled = true;
+        previewMode = "";
+      } finally {
+        busy.dispose();
+      }
+    };
+    const doImport = async () => {
+      if (!payload || !previewMode) {
+        importMsg.textContent = "\u5148\u9884\u6F14\u4E00\u6B21\u518D\u5BFC\u5165\u3002";
+        importMsg.classList.add("bad");
+        return;
+      }
+      if (previewMode === "replace" && confirm.value.trim() !== "\u66FF\u6362") {
+        importMsg.textContent = "\u8986\u76D6\u5BFC\u5165\u8981\u5728\u300C\u786E\u8BA4\u300D\u91CC\u8F93\u5165\u300C\u66FF\u6362\u300D\u4E24\u4E2A\u5B57\u3002";
+        importMsg.classList.add("bad");
+        confirm.focus();
+        return;
+      }
+      const busy = ui.busy("\u5BFC\u5165", "\u5199\u76D8\u5E76\u5907\u4EFD");
+      try {
+        const result = await ctx.invoke("import", [
+          { json: payload, mode: previewMode, confirm: confirm.value.trim() }
+        ]);
+        if (!result.ok || !result.data) throw new Error(result.error ?? "\u5BFC\u5165\u5931\u8D25\u3002");
+        const data = result.data;
+        importMsg.textContent = data.note ? data.note : `\u5DF2\u5BFC\u5165 ${data.imported} \u6761\uFF08\u8DF3\u8FC7 ${data.skipped}\uFF0C\u91CD\u590D ${data.duplicateCount}\uFF0C\u65E0\u6548 ${data.invalid}\uFF09\u3002${data.backup ? `\u5907\u4EFD\uFF1A${data.backup}` : ""}`;
+        importMsg.classList.remove("bad");
+        previewBox.replaceChildren();
+        importBtn.disabled = true;
+        payload = "";
+        previewMode = "";
+        file.value = "";
+        confirm.value = "";
+        await refresh();
+      } catch (error) {
+        importMsg.textContent = `\u5BFC\u5165\u5931\u8D25\uFF1A${textOf4(error)}`;
+        importMsg.classList.add("bad");
+      } finally {
+        busy.dispose();
+      }
+    };
+    mode.addEventListener("change", () => {
+      confirm.style.display = mode.value === "replace" ? "" : "none";
+      importBtn.disabled = true;
+      previewMode = "";
+    });
+    await refresh();
+  }
+};
+var data_default = panel4;
+
 // src/webui/client.ts
 var bundle = {
-  panels: { library: library_default, starmap: starmap_default, embedding: embedding_default }
+  panels: { library: library_default, starmap: starmap_default, embedding: embedding_default, data: data_default }
 };
 var client_default = bundle;
 export {

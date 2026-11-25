@@ -13,11 +13,13 @@ import { fileURLToPath } from 'node:url';
 import type { ToolCallContext, ToolDef, ToolOutcome, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
 import { EMBED_PRESETS, EMBED_PROTOCOLS, INK_CONFIG_GROUP, INK_DEFAULTS, INK_RHYTHM_CONFIG_GROUP, type EmbedProtocol, type InkConfigSection } from './config.ts';
 import { cronMatches, describeCron, nextCronMatch, parseCron, zonedParts, type CronSpec } from './cron.ts';
+import { DEDUPE_JACCARD, describeDuplicate, findDuplicate } from './dedupe.ts';
 import { EmbeddingClient, EmbeddingError, type EmbeddingSettings, type FetchLike } from './embedding.ts';
 import { INK_EVENTS, type InkEventType } from './events.ts';
 import { planMaintenance, type ArchiveDecision } from './maintenance.ts';
 import { planQuery, searchEntries, type SearchHit } from './search.ts';
-import { MemoryStore } from './store.ts';
+import { MAX_TEXT_LENGTH, MemoryStore } from './store.ts';
+import { buildSnapshot, MAX_IMPORT_ENTRIES, parseSnapshot, planImport, TRANSFER_SCHEMA, type ImportPlan } from './transfer.ts';
 import { KIND_LABELS, MAX_TTL_DAYS, MEMORY_KINDS, isExpired, overdueDays, type MemoryEntry, type MemoryKind } from './types.ts';
 import { clampInt, collapse, estimateTokens, nowIso, truncate } from './util.ts';
 import { VectorStore, describeEmbedTarget } from './vector.ts';
@@ -80,7 +82,8 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     description:
       '把一条值得长期记住的事写进记忆库，返回条目 id。正文用一句到几句话写清「谁、什么时候、发生了什么、为什么重要」；不要写寒暄、不要写自己刚读过的原文。' +
       '标签选稳定的名词（人名、项目、主题），重要度 0–5：0 = 随手记，3 = 以后会反复用到，5 = 长期设定。同一件事已经记过时用 ink_amend 改，不要重复写。' +
-      '只是暂时有效的（行程、临时安排、会变的偏好）给 expiresInDays 标个大概天数；到期会提醒你决定续期还是归档。',
+      '只是暂时有效的（行程、临时安排、会变的偏好）给 expiresInDays 标个大概天数；到期会提醒你决定续期还是归档。' +
+      '写入前会查重：如果和已有条目几乎重复，这次不写，回执会给出旧 id 与相似度——改旧的用 ink_amend；确认是另一件事时再带 force 重写。',
     tags: ['write'],
     parameters: {
       type: 'object',
@@ -96,6 +99,10 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
           minimum: 0,
           maximum: MAX_TTL_DAYS,
           description: '大概有效多少天；0 或省略 = 不过期。到期不会自动删，会在整理时间提醒你处理。',
+        },
+        force: {
+          type: 'boolean',
+          description: '查重拦下时仍然写：只在确认「这是另一件事，只是说法像」时用；默认 false。',
         },
       },
       required: ['text'],
@@ -300,6 +307,10 @@ export class ThePalestInkWorld implements World {
   };
   /** 最近一次推出去的提醒，面板上能看见「上次提醒是什么时候」。 */
   private lastReminder: { kind: 'schedule' | 'context' | 'handoff'; at: string; text: string } | null = null;
+  /** 最近一次导入前的备份路径。 */
+  private lastBackup: string | null = null;
+  /** 最近一次导入的时间。 */
+  private lastImportAt: string | null = null;
 
   constructor(opts: InkWorldOptions) {
     this.opts = opts;
@@ -360,6 +371,11 @@ export class ThePalestInkWorld implements World {
           id: 'embedding',
           title: '嵌入',
           description: '引导配置嵌入模型供应商、测试连接、重建向量。',
+        },
+        {
+          id: 'data',
+          title: '数据',
+          description: '导出快照、从文件导入；导入前先预演，写盘前自动备份（唯一会改存档的人工操作）。',
         },
       ],
       invoke: (panel, method, args) => this.invoke(panel, method, args),
@@ -573,9 +589,15 @@ export class ThePalestInkWorld implements World {
       const entry = this.store.archive(decision.id, decision.reason);
       if (!entry) continue;
       applied.push(decision);
+    }
+    // 自动整理一轮只发一条：逐条发会把时间线刷满，而模型关心的只是「收拾了几条、为什么」。
+    if (applied.length) {
+      const stale = applied.filter((decision) => decision.kind === 'stale').length;
+      const conflict = applied.length - stale;
+      const sample = applied.slice(0, 5).map((decision) => decision.id).join('、');
       await this.emit(
-        INK_EVENTS.archived,
-        `自动归档 ${entry.id}（${KIND_LABELS[entry.kind]}）：「${truncate(entry.text, EVENT_PREVIEW_CHARS)}」——${decision.reason}`,
+        INK_EVENTS.swept,
+        `自动整理：归档 ${applied.length} 条（久未取用 ${stale} 条、内容重复 ${conflict} 条${sample ? `；${sample}` : ''}）。归档不是删除，ink_recall 仍读得到。`,
       );
     }
     this.maintenanceStats = {
@@ -592,9 +614,40 @@ export class ThePalestInkWorld implements World {
 
   private async remember(args: Record<string, unknown>, _ctx: ToolCallContext): Promise<string | ToolOutcome> {
     return this.guard(async () => {
+      const text = this.readText(args.text);
+      const kind = this.readKind(args.kind);
+      const mode = this.opts.cfg.dedupeMode === 'merge' ? 'merge' : this.opts.cfg.dedupeMode === 'off' ? 'off' : 'warn';
+      if (args.force !== true && mode !== 'off') {
+        const match = findDuplicate(this.store.all(), text, {
+          kind,
+          threshold: clamp01(this.opts.cfg.dedupeThreshold, DEDUPE_JACCARD),
+        });
+        if (match) {
+          const note = describeDuplicate(match);
+          if (mode === 'merge') {
+            const merged = `${match.entry.text}\n${text}`;
+            if (merged.length > MAX_TEXT_LENGTH) {
+              return {
+                text: `没合并：${match.entry.id} 的正文加上这条会超过 ${MAX_TEXT_LENGTH} 字。用 ink_amend 精简旧条目，或把这条拆短再写。`,
+                failed: true,
+              };
+            }
+            const updated = this.store.update(match.entry.id, { text: merged });
+            if (!updated) return this.notFound(match.entry.id);
+            void this.indexEntry(updated);
+            return `已并入 ${updated.id}（${note}），现在 ${merged.length} 字：「${truncate(updated.text, PREVIEW_CHARS)}」`;
+          }
+          return {
+            text:
+              `没写：这条和 ${match.entry.id} 很像（${note}）：「${truncate(match.entry.text, PREVIEW_CHARS)}」。\n` +
+              '如果说的是同一件事，用 ink_amend 改旧的（或改有效期）；确认是另一件事、只是说法像，再带 force: true 重写一次。',
+            failed: true,
+          };
+        }
+      }
       const result = this.store.add({
-        text: this.readText(args.text),
-        kind: this.readKind(args.kind),
+        text,
+        kind,
         tags: this.readTags(args.tags),
         source: this.readSource(args.source),
         importance: args.importance === undefined ? undefined : clampInt(args.importance, 0, 5, this.opts.cfg.defaultImportance),
@@ -609,7 +662,7 @@ export class ThePalestInkWorld implements World {
         lines.push(`有效期 ${entry.ttlDays} 天，${entry.expiresAt.slice(0, 10)} 到期（不会自动删，到整理时间会提醒你处理）。`);
       }
       if (evicted.length) lines.push(`容量到顶，已把 ${evicted.length} 条最久没被取用的记忆移入归档：${evicted.map((item) => item.id).join('、')}。`);
-      await this.emit(
+      await this.emitTool(
         INK_EVENTS.added,
         `记下「${truncate(entry.text, EVENT_PREVIEW_CHARS)}」（${entry.id}，${KIND_LABELS[entry.kind]}）`,
       );
@@ -662,7 +715,7 @@ export class ThePalestInkWorld implements World {
       const id = this.readId(args.id);
       const entry = this.store.recall(id);
       if (!entry) return this.notFound(id);
-      await this.emit(INK_EVENTS.recalled, `取用记忆 ${entry.id}：「${truncate(entry.text, EVENT_PREVIEW_CHARS)}」`);
+      await this.emitTool(INK_EVENTS.recalled, `取用记忆 ${entry.id}：「${truncate(entry.text, EVENT_PREVIEW_CHARS)}」`);
       return this.entryBlock(entry);
     });
   }
@@ -684,7 +737,7 @@ export class ThePalestInkWorld implements World {
       }
       const entry = this.store.update(id, patch);
       if (!entry) return this.notFound(id);
-      await this.emit(INK_EVENTS.amended, `修订记忆 ${entry.id}：「${truncate(entry.text, EVENT_PREVIEW_CHARS)}」`);
+      await this.emitTool(INK_EVENTS.amended, `修订记忆 ${entry.id}：「${truncate(entry.text, EVENT_PREVIEW_CHARS)}」`);
       void this.indexEntry(entry);
       const ttl = entry.ttlDays > 0 && entry.expiresAt
         ? `有效期 ${entry.ttlDays} 天，${entry.expiresAt.slice(0, 10)} 到期。`
@@ -708,12 +761,12 @@ export class ThePalestInkWorld implements World {
         const removed = this.store.purge(id);
         if (!removed) return this.notFound(id);
         this.vectors.remove(removed.id);
-        await this.emit(INK_EVENTS.purged, `删除记忆 ${removed.id}：「${truncate(removed.text, EVENT_PREVIEW_CHARS)}」`);
+        await this.emitTool(INK_EVENTS.purged, `删除记忆 ${removed.id}：「${truncate(removed.text, EVENT_PREVIEW_CHARS)}」`);
         return `已删除 ${removed.id}，不可恢复。`;
       }
       const entry = this.store.archive(id, reason || undefined);
       if (!entry) return this.notFound(id);
-      await this.emit(INK_EVENTS.archived, `归档记忆 ${entry.id}${reason ? `（${truncate(reason, EVENT_PREVIEW_CHARS)}）` : ''}`);
+      await this.emitTool(INK_EVENTS.archived, `归档记忆 ${entry.id}${reason ? `（${truncate(reason, EVENT_PREVIEW_CHARS)}）` : ''}`);
       return `已归档 ${entry.id}${reason ? `（${reason}）` : ''}。它不再出现在默认检索与 ink_list 里，但还在存档；ink_recall 仍能读到。`;
     });
   }
@@ -1039,6 +1092,20 @@ export class ThePalestInkWorld implements World {
             default:
               return this.fail(`未知方法「${method}」。`);
           }
+        case 'data':
+          switch (method) {
+            case 'status':
+              this.syncConfig();
+              return this.ok(this.dataStatus());
+            case 'export':
+              return this.ok(this.exportMemory(arg(0)));
+            case 'preview':
+              return this.ok(this.previewImport(arg(0)));
+            case 'import':
+              return this.ok(this.importMemory(arg(0)));
+            default:
+              return this.fail(`未知方法「${method}」。`);
+          }
         default:
           return this.fail(`未知面板「${panel}」。`);
       }
@@ -1047,10 +1114,98 @@ export class ThePalestInkWorld implements World {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // 数据面板：导出 / 预演 / 导入
+  // -------------------------------------------------------------------------
+
+  private dataStatus(): unknown {
+    return {
+      counts: this.store.counts(),
+      expired: this.store.expiredCount(this.now()),
+      storeFile: this.store.file,
+      vectorFile: this.vectors.file,
+      entriesBytes: this.store.bytes(),
+      vectorCount: this.vectors.count(),
+      lastBackup: this.lastBackup,
+      lastImportAt: this.lastImportAt,
+      maxImportEntries: MAX_IMPORT_ENTRIES,
+      schema: TRANSFER_SCHEMA,
+    };
+  }
+
+  /** 导出成一份快照文本；面板把它存成文件。 */
+  private exportMemory(args: Record<string, unknown>): unknown {
+    const includeArchived = args.includeArchived !== false;
+    const entries = includeArchived ? this.store.all() : this.store.live();
+    const at = this.now();
+    const json = buildSnapshot(entries, nowIso(this.opts.timezone, at));
+    const stamp = nowIso(this.opts.timezone, at).slice(0, 16).replace(/[:T]/g, '-');
+    return {
+      filename: `thepalestink-${stamp}.json`,
+      json,
+      exported: entries.length,
+      archived: entries.filter((entry) => entry.archived).length,
+      bytes: Buffer.byteLength(json, 'utf8'),
+      note: '快照只含正文与元数据，不含向量；导入后语义检索会按需补向量。',
+    };
+  }
+
+  private previewImport(args: Record<string, unknown>): unknown {
+    const snapshot = parseSnapshot(typeof args.json === 'string' ? args.json : '');
+    const mode = args.mode === 'replace' ? 'replace' : 'merge';
+    const plan = planImport(this.store.all(), snapshot.entries, {
+      mode,
+      threshold: clamp01(this.opts.cfg.dedupeThreshold, DEDUPE_JACCARD),
+    });
+    return { ...this.planSummary(plan), exportedAt: snapshot.exportedAt, local: this.store.counts() };
+  }
+
+  private importMemory(args: Record<string, unknown>): unknown {
+    const snapshot = parseSnapshot(typeof args.json === 'string' ? args.json : '');
+    const mode = args.mode === 'replace' ? 'replace' : 'merge';
+    if (mode === 'replace' && collapse(typeof args.confirm === 'string' ? args.confirm : '') !== '替换') {
+      throw new Error('覆盖导入会让本地记忆只剩文件里那些；确认的话在「确认」里输入「替换」两个字。');
+    }
+    const plan = planImport(this.store.all(), snapshot.entries, {
+      mode,
+      threshold: clamp01(this.opts.cfg.dedupeThreshold, DEDUPE_JACCARD),
+    });
+    if (!plan.added.length) {
+      return { ...this.planSummary(plan), imported: 0, backup: null, note: '没有可导入的新条目。' };
+    }
+    // 先备份再写：覆盖模式尤其要留后路。
+    const backup = this.store.backup();
+    let imported = 0;
+    if (mode === 'replace') {
+      imported = this.store.replaceAll(plan.added);
+      this.vectors.prune(new Set(this.store.all().map((entry) => entry.id)));
+    } else {
+      for (const item of plan.added) if (this.store.adopt(item)) imported += 1;
+    }
+    this.lastBackup = backup;
+    this.lastImportAt = nowIso(this.opts.timezone, this.now());
+    if (this.semanticEnabled() && this.opts.cfg.embedAutoReindex) {
+      void this.backfill(AUTO_BACKFILL_LIMIT).catch(() => undefined);
+    }
+    return { ...this.planSummary(plan), imported, backup, counts: this.store.counts() };
+  }
+
+  private planSummary(plan: ImportPlan): Record<string, unknown> {
+    return {
+      mode: plan.mode,
+      incoming: plan.incoming,
+      added: plan.added.length,
+      skipped: plan.skipped,
+      duplicates: plan.duplicates.slice(0, 8),
+      duplicateCount: plan.duplicates.length,
+      invalid: plan.invalid,
+      samples: plan.samples,
+    };
+  }
+
   private ok(data: unknown): PanelResult {
     return { ok: true, data };
   }
-
   private fail(error: string): PanelResult {
     return { ok: false, error };
   }
@@ -1419,6 +1574,12 @@ export class ThePalestInkWorld implements World {
     } catch (error) {
       host.log.warn(`[thepalestink] 事件 ${type} 推送失败：${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /** 模型自己动作的回声（记下/修订/取用/归档/删除）：默认静音，只有 eventLevel='normal' 才发。 */
+  private async emitTool(type: InkEventType, text: string): Promise<void> {
+    if (this.opts.cfg.eventLevel !== 'normal') return;
+    await this.emit(type, text);
   }
 
   private entryLine(index: number, entry: MemoryEntry): string {

@@ -19,6 +19,7 @@ import { planMaintenance } from '../src/maintenance.ts';
 import { searchEntries } from '../src/search.ts';
 import { MemoryStore } from '../src/store.ts';
 import { VectorStore } from '../src/vector.ts';
+import { findDuplicate, hamming64, simhash64 } from '../src/dedupe.ts';
 import { layoutStarMap } from '../src/webui/starmap-layout.ts';
 import { ThePalestInkWorld } from '../src/world.ts';
 
@@ -126,7 +127,7 @@ function tempDir() {
     },
     log: { warn: (message) => warnings.push(String(message)) },
   };
-  const cfg = { ...INK_DEFAULTS, maxEntries: 50, searchLimit: 5 };
+  const cfg = { ...INK_DEFAULTS, eventLevel: 'normal', maxEntries: 50, searchLimit: 5 };
   const world = new ThePalestInkWorld({ cfg, timezone: 'Asia/Shanghai', dataDir: dir });
   const tools = world.tools();
   const byName = (name) => tools.find((tool) => tool.name === name);
@@ -490,7 +491,7 @@ function tempDir() {
   await byName('ink_remember').handler({ text: '临时安排，很快会过时。', importance: 1 }, {});
   const maintenance = await world.runMaintenance('manual', new Date(at.getTime() + 40 * 86_400_000));
   check('World 自动归档过期条目', maintenance.archived === 1, JSON.stringify(maintenance.decisions));
-  check('归档推事件', count('ink.memory.archived') >= 1, String(count('ink.memory.archived')));
+  check('归档推事件', count('ink.maintenance.swept') >= 1, String(count('ink.memory.archived')));
 
   const snapshot = await world.webUi().invoke('library', 'snapshot', []);
   check('面板有节奏卡', snapshot.ok === true && snapshot.data.rhythm.cronValid === true, JSON.stringify(snapshot.data?.rhythm?.cronValid));
@@ -501,6 +502,60 @@ function tempDir() {
 }
 
 // ---------------------------------------------------------------- 汇总
+// ---------------------------------------------------------------- 0.6.0：静音、查重与导入导出
+{
+  const textOf = (outcome) => (typeof outcome === 'string' ? outcome : outcome.text);
+  const pool = [{ id: 'mem_a', text: '周三下午三点和对方过一遍记忆库的导出。', kind: 'fact' }];
+  check('0.6 包含度能认出「补了后半句」', findDuplicate(pool, '周三下午三点和对方过一遍记忆库的导出，顺带看面板。')?.entry.id === 'mem_a');
+  check('0.6 simhash 同文距离为 0', hamming64(simhash64('林照'), simhash64('林照')) === 0);
+
+  const dir = tempDir();
+  const events = [];
+  const warnings = [];
+  const host = {
+    pushEvent: async (event) => {
+      events.push(event);
+      return { ...event, cursor: events.length };
+    },
+    log: { warn: (message) => warnings.push(String(message)) },
+  };
+  const world = new ThePalestInkWorld({ cfg: { ...INK_DEFAULTS }, timezone: 'Asia/Shanghai', dataDir: dir });
+  await world.start(host);
+  const call = (name, args) => world.tools().find((tool) => tool.name === name).handler(args, {});
+
+  const first = textOf(await call('ink_remember', { text: '对方叫林照，负责淡墨这个记忆库项目，周三同步进度。' }));
+  const id = /已记下 (mem_[A-Za-z0-9]+)/.exec(first)?.[1];
+  check('0.6 写入拿到 id', Boolean(id), first);
+  check('0.6 默认静音：写完没有回声事件', events.filter((event) => event.type === 'ink.memory.added').length === 0, events.map((event) => event.type).join(','));
+
+  const blocked = await call('ink_remember', { text: '对方叫林照，负责淡墨这个记忆库项目，周三同步进度。' });
+  check('0.6 重复写入被拦并给旧 id', blocked.failed === true && textOf(blocked).includes(id), textOf(blocked));
+
+  const forced = textOf(await call('ink_remember', { text: '对方叫林照，负责淡墨这个记忆库项目，周三同步进度。', force: true }));
+  check('0.6 force 能绕过查重', /已记下 /.test(forced), forced);
+
+  const preview = await world.webUi().invoke('data', 'preview', [
+    { json: JSON.stringify({ schema: 1, entries: [{ id: 'mem_import_x', text: '对方出生在杭州，现在住在上海。', kind: 'fact' }] }), mode: 'merge' },
+  ]);
+  check('0.6 预演算出 1 条新增', preview.ok === true && preview.data.added === 1, JSON.stringify(preview.data));
+
+  const imported = await world.webUi().invoke('data', 'import', [
+    { json: JSON.stringify({ schema: 1, entries: [{ id: 'mem_import_x', text: '对方出生在杭州，现在住在上海。', kind: 'fact' }] }), mode: 'merge' },
+  ]);
+  check('0.6 合并导入写进 1 条并备份', imported.ok === true && imported.data.imported === 1 && Boolean(imported.data.backup), JSON.stringify(imported.data));
+
+  const refused = await world.webUi().invoke('data', 'import', [
+    { json: JSON.stringify({ schema: 1, entries: [] }), mode: 'replace' },
+  ]);
+  check('0.6 覆盖要确认', refused.ok === false && String(refused.error).includes('替换'), JSON.stringify(refused));
+
+  const sweptBefore = events.filter((event) => event.type === 'ink.maintenance.swept').length;
+  await world.runMaintenance('manual', new Date(Date.now() + 400 * 86_400_000));
+  check('0.6 自动整理只发一条聚合事件', events.filter((event) => event.type === 'ink.maintenance.swept').length === sweptBefore + 1);
+  check('0.6 没有警告', warnings.length === 0, warnings.join(' | '));
+  await world.stop();
+}
+
 if (failures.length) {
   console.log(`FAIL ${failures.length} / ${failures.length + passed}`);
   for (const failure of failures) console.log(`- ${failure}`);

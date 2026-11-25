@@ -3,8 +3,9 @@
 - `cortico.api` 是 6（world 契约版本）。宿主升契约时先跑 `pnpm check:extension <本包目录>` 看它打印的版本。
 - 改了工具、事件或 `src/ENV_PROMPT.md`，要重跑 `pnpm describe:extension <本包目录>`，否则 `describe.json` 与代码不一致（check 会报）。本机没有 pnpm 时用 `node _dev/gen-describe.mjs` 重生成。
 - World id 固定 `thepalestink`（全小写、无连字符：WebUI 页 id 是 `world:thepalestink`，协议只接受小写字母数字与 `-`；事件 type 段内也不许连字符）。工具前缀固定 `ink_`，配置路径因此是 `worlds.thepalestink.*`。
-- 八个工具：`ink_remember` / `ink_search` / `ink_recall` / `ink_amend` / `ink_forget` / `ink_expired` / `ink_list` / `ink_stats`。面板三个页签：`library`（记忆库，只读）、`starmap`（星图，只读）、`embedding`（嵌入配置）。
+- 八个工具：`ink_remember` / `ink_search` / `ink_recall` / `ink_amend` / `ink_forget` / `ink_expired` / `ink_list` / `ink_stats`。面板四个页签：`library`（记忆库，只读）、`starmap`（星图，只读）、`embedding`（嵌入配置）、`data`（导入导出）。
 - 数据两份：`<dataDir>/thepalestink/entries.json`（`MEMORY_SCHEMA = 1`，删它等于清空记忆库）与 `<dataDir>/thepalestink/vectors.json`（`VECTOR_SCHEMA = 1`，删它只丢向量、不丢正文）。schema 升级要写迁移，不要静默丢弃旧字段。
+- 导入前会写备份：`entries.json.bak-<base36 时间戳>`，`store.backup()` 返回路径，`dataStatus().lastBackup` 给面板显示。备份只在导入时生成，不自动清理。
 - 写盘都是 `.tmp` + rename；坏档改名成 `*.broken-<时间戳>` 后空库继续，`store.recovery()` / `vectors.recovery()` 记着备份路径。
 - 容量策略在 `MemoryStore.add()` → `enforceLimit()`：只数**未归档**条目，超限按 `lastRecalledAt ?? updatedAt` 最旧优先淘汰到归档（`archived: true` + `archiveReason`），`pinned` 不淘汰。`_dev/verify.mjs` 里有置顶保护与热改上限的用例，改策略先跑它。
 - 归档区只留最近 `ARCHIVE_KEEP = 200` 条（`trimArchived()`，置顶的除外）。
@@ -19,7 +20,7 @@
 - `ink_forget` 默认只归档；`purge: true` 必须 `worlds.thepalestink.hardDeleteOnForget === true` 才接受，否则回失败回执（`{ failed: true }`）。这是有意的双闸，别为了顺手拆掉。
 - 配置全部 `x-hot`：`syncConfig()` 在每次工具调用前跑，`maxEntries` 改小会**立刻**淘汰并推 `ink.memory.evicted`。
 - 环境提示词在 `src/ENV_PROMPT.md`，占位符 `{{thepalestink.count}}` / `{{thepalestink.archived}}` / `{{thepalestink.maxEntries}}` / `{{thepalestink.topTags}}` / `{{thepalestink.semantic}}` / `{{thepalestink.expired}}` 由 `envPromptVars()` 提供。改占位符名要两边一起改。
-- 面板：服务端在 `src/world.ts` 的 `invoke()`（`library` / `starmap` / `embedding` 各一个分支），客户端在 `src/webui/panels/*.ts`，打包入口 `src/webui/client.ts` → `dist/webui.js`（manifest 的 `cortico.webUiClient`）。客户端只能 `import type`，不能 import 服务端模块；面板返回统一 `{ok,data}|{ok:false,error}`，别抛异常穿透。
+- 面板：服务端在 `src/world.ts` 的 `invoke()`（`library` / `starmap` / `embedding` / `data` 各一个分支），客户端在 `src/webui/panels/*.ts`，打包入口 `src/webui/client.ts` → `dist/webui.js`（manifest 的 `cortico.webUiClient`）。客户端只能 `import type`，不能 import 服务端模块；面板返回统一 `{ok,data}|{ok:false,error}`，别抛异常穿透。
 - 面板加方法要改两处：`invoke()` 的 switch 与 `panels` 声明里的 `getMethods`（省略 `getMethods` 就只接受 POST）。
 - 改完面板必须 `pnpm build:webui`（或 `node node_modules/esbuild/bin/esbuild src/webui/client.ts --bundle --format=esm --target=es2022 --platform=browser --outfile=dist/webui.js`），否则页面加载的是旧 bundle。
 - 文案口径：模型对**人类**称「对方」，模型自己称「你」；回执不是正文，不要整段贴回。
@@ -47,6 +48,23 @@
 - 明确不做：不做逐条「已通知」去重（cron 就是整理时间，每次都报未处理数量）、不自动归档过期条目、不判断事实是否还成立。要改事实就 `ink_amend` 正文。
 - 改这块先跑 `node _dev/verify.mjs`（有时效用例），再跑 `tests/world.test.ts` 里「过期条目」「不填 expiresInDays 永不过期」两例；测试要模拟时间流逝，得改 `reminderWorld` 那个 `now` 返回的 Date 对象本身（`clock.setTime(...)`），只把 `tick(now)` 传成未来时间不够。
 
+## 事件档位与查重
+
+- 事件有两个档位（配置 `eventLevel`，默认 `quiet`）：`quiet` 只发系统事件——`loaded`、`store.recovered`、`reminder.*`、`embed.*`、`evicted`、`maintenance.swept`；`normal` 才把 `added` / `amended` / `recalled` / `purged` / `archived` 这些「自己动作的回声」也发出来。`emitTool()` 是回声的统一出口，别在工具里直接 `emit()`。
+- `runMaintenance()` **一轮只发一条** `ink.maintenance.swept`（归档数、久未取用/内容重复各几条、最多 5 个样本 id），不再逐条发 `archived`。时间线是给模型读的，不是审计日志。
+- `describe.json` 仍声明全部 15 个事件——声明是「可能发」，文档才是「默认发什么」，别为了静音去删声明。
+- 查重在 `src/dedupe.ts`（纯函数）：`fingerprint()` 来自 `src/maintenance.ts`（拉丁词 + 中日韩相邻两字），两把尺子——Jaccard ≥ `dedupeThreshold`（默认 0.82）、小集合被大集合包含 ≥ `DEDUPE_CONTAINMENT = 0.92`、或 simhash 汉明 ≤ `DEDUPE_HAMMING = 4`；特征少于 `MIN_FEATURES = 3` 不判（短句撞车太多）。
+- 查重只比**同 kind、未归档、未置顶**的条目，`excludeId` 用来跳过自己。`dedupeMode`：`warn`（默认，拦下并回旧 id + 相似度）、`merge`（把新正文追加进旧条目，超 `MAX_TEXT_LENGTH` 回失败）、`off`。`ink_remember` 的 `force: true` 只在 warn 档有意义。
+- 判重的口径是「别写第二份」，不是「判断事实冲突」：换了关键信息的改写（周三→周五）会被当成新条目。别顺手把它扩成语义冲突判定——那是 0.4.0 明确不做的事。
+
+## 导入导出
+
+- 走面板（`invoke('data', ...)`），**不走工具**：几百条 JSON 塞不进工具参数，也不该让模型转述整份存档。
+- `src/transfer.ts` 是纯函数：`buildSnapshot()` / `parseSnapshot()` / `planImport()` / `normalizeCandidate()`。预演与真正导入**共用** `planImport`，所以面板上看到的数字就是会写进去的数字；改导入逻辑只改这一处。
+- `merge` 是本地优先：同 id 跳过、内容与本地几乎重复跳过、只补新的；`replace` 让本地只剩文件里那些，**必须**收到 `confirm === "替换"`（`collapse()` 后比较），且写盘前 `store.backup()`。
+- 快照只含正文与元数据（不含向量）；导入后语义检索按 `embedAutoReindex` 决定是否补向量。`replace` 之后要 `vectors.prune(new Set(存活 id))`，否则旧 id 的向量会残留。
+- 导入上限 `MAX_IMPORT_ENTRIES = 5000`；非法条目（缺 id/正文）只计数，不中断整批。
+
 ## 记忆星图
 
 - 页签 `starmap`，只读。服务端 `starMap()` 在 `src/world.ts`，布局是纯函数 `layoutStarMap()` 在 `src/webui/starmap-layout.ts`（无 DOM、无宿主 import，`tests/starmap-layout.test.ts` 与 `_dev/verify.mjs` 都直接 import 它）。
@@ -60,15 +78,15 @@
 
 ## 验证到哪一级
 
-- 行为自检：`node _dev/verify.mjs` → **99 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、八个工具、时效与过期、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档、星图布局）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance/starmap-layout 后先跑它。
+- 行为自检：`node _dev/verify.mjs` → **110 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、八个工具、时效与过期、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档、星图布局、查重、静音、导入导出）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance/dedupe/transfer/starmap-layout 后先跑它。
 - 类型检查：`tsc --noEmit`（主项目）与 `tsc -p tsconfig.webui.json --noEmit`（面板）**都通过，0 错误**。
-- 单元测试：`vitest run` → **90/90 通过**（`tests/world.test.ts` 23、`tests/starmap-layout.test.ts` 10、`tests/search.test.ts` 13、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
-- 面板构建：`dist/webui.js` **50.5kb**，esbuild 无警告。
+- 单元测试：`vitest run` → **114/114 通过**（`tests/world.test.ts` 29、`tests/dedupe.test.ts` 9、`tests/transfer.test.ts` 6、`tests/starmap-layout.test.ts` 10、`tests/search.test.ts` 13、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
+- 面板构建：`dist/webui.js` **约 60.5kb（61,990 B）**，esbuild 无警告。
 - **`pnpm` 曾经静默挂住，已修**：`package.json` 里锁的 `packageManager: pnpm@11.28.6` 与本机 12.23.0 不一致，pnpm 10+ 会按字段去取旧版，取不到就无声卡死（`pnpm --version` 正常，因为它不读项目）。改成 `pnpm@12.23.0` 后 `pnpm install` / `pnpm typecheck` / `pnpm test` / `pnpm build:webui` 全部正常，`pnpm-lock.yaml` 已入库。**改这个字段前先看 `pnpm --version`。**
 - **不要用 PowerShell 文本管道写文件**：会话里有个防双重编码的插件，`Get-Content x | Set-Content x`、`Out-File`、`cat x > y`、`Tee-Object` 会被直接拒绝执行（看起来像「用户拒绝了命令」），就算跑通也可能把中文按 ANSI 写坏。读用 `read`、写用 `write`/`edit`；脚本里必须读写文件时用 `[IO.File]::ReadAllText` / `[IO.File]::WriteAllText` 配 `[Text.UTF8Encoding]::new($false)`。
-- `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：8 个工具、6 个占位符、3 个面板、2 个配置组全部通过，`describe.json` 与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。
+- `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：8 个工具、6 个占位符、4 个面板、2 个配置组全部通过，`describe.json`（8 tools / 15 events / 1 prompt）与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。
 - `defaults().enabled` 恒为 `false`：宿主 `dryMount` 会拿这条当警告，装不装、开不开由 bot 声明与部署决定。
-- 第三级（装进实例目击行为）：未做，待开发者。要看的现象：World 页多三个页签（记忆库 / 星图 / 嵌入）、`ink_search` 回执、嵌入页「测试连接」出维度与耗时、星图里点和圈画得出来。
+- 第三级（装进实例目击行为）：未做，待开发者。要看的现象：World 页多四个页签（记忆库 / 星图 / 嵌入 / 数据）、`ink_search` 回执、嵌入页「测试连接」出维度与耗时、星图里点和圈画得出来、数据页导出能下载、覆盖导入要打「替换」。
 
 ## 提交前
 

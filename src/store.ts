@@ -9,7 +9,7 @@
  * - 所有写操作都会立刻落盘：进程被杀不至于丢掉刚记下的一条。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   KIND_LABELS,
@@ -281,6 +281,54 @@ export class MemoryStore {
     const [removed] = this.current().splice(index, 1);
     this.save();
     return { ...removed, tags: [...removed.tags] };
+  }
+
+  /**
+   * 把快照里的一条并进来（导入用）：保留原 id 与时间，只保证字段合法。
+   * 同 id 已存在时原样返回旧条目，不覆盖——合并策略是「本地优先」。
+   */
+  adopt(raw: unknown): MemoryEntry | null {
+    this.ensureLoaded();
+    const entry = this.coerceEntry(raw);
+    if (!entry) return null;
+    const existing = this.findMutable(entry.id);
+    if (existing) return { ...existing, tags: [...existing.tags] };
+    this.current().push(entry);
+    this.enforceLimit();
+    this.save();
+    return { ...entry, tags: [...entry.tags] };
+  }
+
+  /** 整库替换（导入 replace）：只留下能补齐成合法条目的那些；返回实际条数。 */
+  replaceAll(list: readonly unknown[]): number {
+    this.ensureLoaded();
+    const next: MemoryEntry[] = [];
+    for (const item of list) {
+      const entry = this.coerceEntry(item);
+      if (entry) next.push(entry);
+    }
+    this.entries = next;
+    this.enforceLimit();
+    this.save();
+    return next.length;
+  }
+
+  /** 写盘前备份：复制一份 `entries.json.bak-<时间戳>`；还没有存档时返回 null。 */
+  backup(): string | null {
+    this.ensureLoaded();
+    if (!existsSync(this.file)) return null;
+    const path = `${this.file}.bak-${Date.now().toString(36)}`;
+    copyFileSync(this.file, path);
+    return path;
+  }
+
+  /** 存档文件当前多大（字节）；没有存档时为 0。 */
+  bytes(): number {
+    try {
+      return existsSync(this.file) ? statSync(this.file).size : 0;
+    } catch {
+      return 0;
+    }
   }
 
   /** 懒加载后的条目数组；`ensureLoaded()` 之后必然存在。 */

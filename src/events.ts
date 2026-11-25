@@ -15,6 +15,7 @@ export const INK_EVENTS = {
   purged: 'ink.memory.purged',
   recalled: 'ink.memory.recalled',
   evicted: 'ink.memory.evicted',
+  swept: 'ink.maintenance.swept',
   recovered: 'ink.store.recovered',
   embedReady: 'ink.embed.ready',
   embedFailed: 'ink.embed.failed',
@@ -60,6 +61,14 @@ export const INK_EVENT_DECLS: readonly EventDescribe[] = [
   {
     type: INK_EVENTS.evicted,
     description: { zh: '容量到顶，最久没被取用的条目被挤进归档。', en: 'Capacity reached; the least recently used entries were pushed into the archive.' },
+    trigger: 'flush',
+  },
+  {
+    type: INK_EVENTS.swept,
+    description: {
+      zh: '一轮自动整理结束：报归档了几条（久未取用 / 内容重复各几条）与最多五条样本，不逐条发。',
+      en: 'One automatic sweep finished: reports how many were archived (stale / duplicate), with up to five samples, instead of one event per entry.',
+    },
     trigger: 'flush',
   },
   {

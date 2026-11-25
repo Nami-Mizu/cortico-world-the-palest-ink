@@ -132,6 +132,8 @@ describe('淡墨 · 记忆库', () => {
 
   it('写入落盘、可检索、可修订、归档后默认检索看不到', async () => {
     const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    // 默认是 quiet（自己的动作不发回声事件）；这一条用例专门验事件，切回 normal。
+    ctx.cfg.eventLevel = 'normal';
     const world = THE_PALEST_INK.create(ctx);
     const host = new FakeHost();
     await world.start(host);
@@ -471,10 +473,12 @@ describe('淡墨 · 提醒与自动归档', () => {
     expect(result.archived).toBe(1);
     expect(result.decisions[0]?.id).toBe(stale);
 
-    const archiveEvents = host.events.filter((event) => event.type === 'ink.memory.archived');
-    expect(archiveEvents[0]?.text).toContain('自动归档');
-    expect(archiveEvents[0]?.text).toContain('天没被取用');
-    expect(archiveEvents[0]?.text).toContain('重要度 1');
+    // 一轮整理只发一条聚合事件，不再逐条发 archived
+    const swept = host.events.filter((event) => event.type === 'ink.maintenance.swept');
+    expect(swept).toHaveLength(1);
+    expect(swept[0].text).toContain('归档 1 条');
+    expect(swept[0].text).toContain('久未取用 1 条');
+    expect(swept[0].text).toContain('内容重复 0 条');
 
     const archived = await panel(world, 'library', 'entry', { id: stale });
     expect((archived.data as { archiveReason: string }).archiveReason).toContain('自动归档');
@@ -506,8 +510,14 @@ describe('淡墨 · 提醒与自动归档', () => {
     const important = idFrom(
       textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。', kind: 'fact', importance: 3 }, CALL)),
     );
+    // 写入查重会拦住第二条，这里要绕过它，专门造出「库里已有两条重复」的局面。
     const duplicate = idFrom(
-      textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。', kind: 'fact', importance: 1 }, CALL)),
+      textOf(
+        await tool(world, 'ink_remember').handler(
+          { text: '对方叫林照，负责淡墨这个记忆库项目。', kind: 'fact', importance: 1, force: true },
+          CALL,
+        ),
+      ),
     );
 
     const result = await world.runMaintenance('manual', now);
@@ -658,3 +668,135 @@ describe('淡墨 · 面板', () => {
   });
 });
 
+
+describe('淡墨 · 0.6.0：静音、查重与导入导出', () => {
+  function inkWorld(ctx: { dataDir: string }, cfg: Partial<InkConfigSection> = {}): ThePalestInkWorld {
+    return new ThePalestInkWorld({
+      cfg: { ...INK_DEFAULTS, ...cfg },
+      timezone: 'Asia/Shanghai',
+      dataDir: ctx.dataDir,
+    });
+  }
+
+  it('默认 quiet：自己的写入、取用、修订、归档不留回声事件', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = inkWorld(ctx);
+    const host = new FakeHost();
+    await world.start(host);
+
+    const id = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照。' }, CALL)));
+    await tool(world, 'ink_recall').handler({ id }, CALL);
+    await tool(world, 'ink_amend').handler({ id, importance: 4 }, CALL);
+    await tool(world, 'ink_forget').handler({ id, reason: '记重了' }, CALL);
+
+    expect(host.events.map((event) => event.type)).toEqual(['ink.memory.loaded']);
+    await world.stop();
+  });
+
+  it('eventLevel=normal 时回声事件照旧发', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = inkWorld(ctx, { eventLevel: 'normal' });
+    const host = new FakeHost();
+    await world.start(host);
+
+    const id = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照。' }, CALL)));
+    await tool(world, 'ink_recall').handler({ id }, CALL);
+
+    expect(host.events.map((event) => event.type)).toEqual([
+      'ink.memory.loaded',
+      'ink.memory.added',
+      'ink.memory.recalled',
+    ]);
+    await world.stop();
+  });
+
+  it('查重拦住几乎一样的第二条，带 force 才能再写', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = inkWorld(ctx);
+    await world.start(new FakeHost());
+
+    const first = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。' }, CALL)));
+    const blocked = await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。' }, CALL);
+    expect(failedOf(blocked)).toBe(true);
+    expect(textOf(blocked)).toContain(first);
+    expect(textOf(blocked)).toContain('force');
+
+    const forced = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。', force: true }, CALL)));
+    expect(forced).not.toBe(first);
+
+    const snapshot = await panel(world, 'library', 'snapshot');
+    expect((snapshot.data as { counts: { live: number } }).counts.live).toBe(2);
+    await world.stop();
+  });
+
+  it('dedupeMode=merge 时把新正文并进旧条目，不多写一条', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = inkWorld(ctx, { dedupeMode: 'merge' });
+    await world.start(new FakeHost());
+
+    const first = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '周三下午三点和对方过一遍记忆库的导出。' }, CALL)));
+    const merged = textOf(await tool(world, 'ink_remember').handler({ text: '周三下午三点和对方过一遍记忆库的导出，顺带看面板。' }, CALL));
+    expect(merged).toContain('已并入');
+    expect(merged).toContain(first);
+
+    const full = textOf(await tool(world, 'ink_recall').handler({ id: first }, CALL));
+    expect(full).toContain('顺带看面板');
+    const snapshot = await panel(world, 'library', 'snapshot');
+    expect((snapshot.data as { counts: { live: number } }).counts.live).toBe(1);
+    await world.stop();
+  });
+
+  it('dedupeMode=off 时不做写入查重', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = inkWorld(ctx, { dedupeMode: 'off' });
+    await world.start(new FakeHost());
+    await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。' }, CALL);
+    await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。' }, CALL);
+    const snapshot = await panel(world, 'library', 'snapshot');
+    expect((snapshot.data as { counts: { live: number } }).counts.live).toBe(2);
+    await world.stop();
+  });
+
+  it('数据面板：导出快照、预演、合并导入、覆盖要确认', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = inkWorld(ctx);
+    await world.start(new FakeHost());
+    idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '对方叫林照，负责淡墨这个记忆库项目。' }, CALL)));
+
+    const status = await panel(world, 'data', 'status');
+    expect(status.ok).toBe(true);
+    expect((status.data as { counts: { live: number } }).counts.live).toBe(1);
+
+    const exported = await panel(world, 'data', 'export', { includeArchived: true });
+    const out = exported.data as { filename: string; json: string; exported: number };
+    expect(out.filename).toMatch(/^thepalestink-.*\.json$/);
+    expect(out.exported).toBe(1);
+    expect(JSON.parse(out.json).entries).toHaveLength(1);
+
+    const incoming = JSON.stringify({
+      schema: 1,
+      app: 'thepalestink',
+      exportedAt: '2026-11-26T00:00:00.000+08:00',
+      entries: [{ id: 'mem_import_1', text: '对方出生在杭州，现在住在上海。', kind: 'fact' }],
+    });
+
+    const preview = await panel(world, 'data', 'preview', { json: incoming, mode: 'merge' });
+    expect((preview.data as { added: number }).added).toBe(1);
+
+    const imported = await panel(world, 'data', 'import', { json: incoming, mode: 'merge' });
+    expect((imported.data as { imported: number }).imported).toBe(1);
+    expect((imported.data as { backup: string | null }).backup).toContain('.bak-');
+
+    const after = await panel(world, 'data', 'status');
+    expect((after.data as { counts: { live: number } }).counts.live).toBe(2);
+
+    const refused = await panel(world, 'data', 'import', { json: incoming, mode: 'replace' });
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('替换');
+
+    const replaced = await panel(world, 'data', 'import', { json: incoming, mode: 'replace', confirm: '替换' });
+    expect(replaced.ok).toBe(true);
+    expect((replaced.data as { counts: { live: number } }).counts.live).toBe(1);
+    await world.stop();
+  });
+});

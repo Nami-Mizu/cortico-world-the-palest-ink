@@ -15,7 +15,9 @@
 - 容量有上限（默认 500 条），满了淘汰**最久没被取用**的条目到归档区，置顶条目不淘汰。
 - 会挑时候提醒模型写：定时（cron，如 `30 7 * * *`）、上下文估算过阈值、上下文刚交接完。定时那次会顺带报「有几条已经过期」；提醒只是提示，不写也行。
 - 会自动归档两类记忆：久没被取用且重要度低的；两条内容几乎重复的（留较新/较重要的）。置顶与重要度 5 永不自动动。
-- 三个面板：「记忆库」看条目、检索与「写记忆的节奏」；「星图」把每条记忆画成一个点、标签画成引力圈；「嵌入」引导人类配置供应商、测连接、看用量。
+- 写入前会查重：几乎同一句的重复记忆会被拦下（给旧 id 与相似度），模型可以改旧的、加 `force` 硬写，或让 `merge` 模式直接并进旧条目。
+- 事件默认**静音**：模型自己的写入/取用/修订不发事件，只有载入、坏档恢复、提醒、嵌入、容量淘汰与自动整理的聚合回执会进时间线（配置 `eventLevel: normal` 可开回逐条）。
+- 四个面板：「记忆库」看条目、检索与「写记忆的节奏」；「星图」把每条记忆画成一个点、标签画成引力圈；「嵌入」引导人类配置供应商、测连接、看用量；「数据」导出快照、从文件导入（先预演、写盘前自动备份）。
 - 存档是人类可读的 JSON，坏档会先改名备份再从空库继续，不会静默丢数据。
 
 ## 装
@@ -25,13 +27,13 @@
 3. 到 World 页启用「淡墨」。
 4. 再重启一次，让 World 的工具与环境提示词生效。
 
-启用直达：`world:thepalestink`（World 总览里的一张卡，卡片上有「记忆库」「星图」「嵌入」三个页签）。
+启用直达：`world:thepalestink`（World 总览里的一张卡，卡片上有「记忆库」「星图」「嵌入」「数据」四个页签）。
 
 ## 工具
 
 | 工具 | 标签 | 用途 |
 | --- | --- | --- |
-| `ink_remember` | write | 写一条记忆，返回 id；可选 `expiresInDays` 标有效期 |
+| `ink_remember` | write | 写一条记忆，返回 id；可选 `expiresInDays` 标有效期；写入前查重，重复时回失败与旧 id，带 `force` 可硬写 |
 | `ink_search` | read | 按关键词/标签/种类检索，回摘要行；开语义时同时算向量分，过期条目标「⏳」 |
 | `ink_recall` | read | 按 id 读全文，并记一次取用 |
 | `ink_amend` | write | 按 id 修订正文、标签、种类、来源、重要度、置顶、有效期（`expiresInDays`，0 = 永久） |
@@ -55,6 +57,10 @@
 | 嵌入 | `probe` | 发一条最小请求测连接，返回维度与耗时 |
 | 嵌入 | `reindex` | 只补缺的向量（换模型会整仓重建） |
 | 嵌入 | `presets` | 四套供应商预设：OpenAI / Ollama / LM Studio / 自定义 |
+| 数据 | `status` | 存档与向量文件、条数、大小、上次备份/导入时间、导入上限 |
+| 数据 | `export` | 导出快照 JSON（含归档可选），前端直接下载；不含向量 |
+| 数据 | `preview` | 导入预演：新增/跳过/重复/非法计数与样本，和真正导入用同一套计划 |
+| 数据 | `import` | `merge`（本地优先）或 `replace`（要输入「替换」确认）；写盘前自动备份 |
 
 星图只画点、不画线：每个标签是一个圈（按出现次数排在外圈），每条记忆落在它所属标签圈心的中点附近；点的大小是重要度，实心环是置顶，虚线圈是已过期，灰点是归档。位置由条目 id 的哈希决定，同一份数据每次画出来一样。可以拖拽平移、滚轮缩放，点圆点读全文。上限 800 个点（超出只进列表）。
 
@@ -64,8 +70,10 @@
 
 ## 事件
 
-`ink.memory.loaded` / `added` / `amended` / `archived` / `purged` / `recalled` / `evicted` / `ink.store.recovered` / `ink.embed.ready` / `ink.embed.failed` / `ink.embed.reindexed` / `ink.reminder.schedule` / `ink.reminder.context` / `ink.reminder.handoff`。
+`ink.memory.loaded` / `added` / `amended` / `archived` / `purged` / `recalled` / `evicted` / `ink.store.recovered` / `ink.embed.ready` / `ink.embed.failed` / `ink.embed.reindexed` / `ink.reminder.schedule` / `ink.reminder.context` / `ink.reminder.handoff` / `ink.maintenance.swept`。
 载入、坏档恢复、交接提醒是 `preempt`，其余是 `flush`。
+
+默认 `eventLevel: quiet`：`added` / `amended` / `recalled` / `purged` / `archived` 不发（那是模型自己动作的回声），自动整理也只在**一轮结束时发一条** `ink.maintenance.swept`（归档几条、久未取用/内容重复各几条、最多 5 个样本 id）。`describe.json` 仍声明全部 15 个事件。
 
 ## 配置
 
@@ -102,6 +110,14 @@
 
 密钥只走部署的 `.env`：面板「嵌入」页填写后会调用宿主的 `storeSecret`，配置里只留变量名。本地回环地址（127.0.0.1 / localhost）允许不带密钥。
 
+### 写入与事件
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `eventLevel` | `quiet` | `quiet` 只发系统事件；`normal` 把模型动作的回声也发出来（写代码调试时用） |
+| `dedupeMode` | `warn` | 写入前查重：`warn` 拦下并提示旧 id、`merge` 并进旧条目、`off` 不查 |
+| `dedupeThreshold` | `0.82` | Jaccard 相似度阈值（0.5–0.99）；另有「小集合被包含 ≥92%」与「simhash 汉明 ≤4 位」两条判重 |
+
 ### 写记忆的节奏
 
 | 键 | 默认 | 说明 |
@@ -127,6 +143,7 @@
 - 写盘先写 `.tmp` 再 rename，进程被杀不会留下半个文件。
 - 读到坏档时改名为 `*.broken-<时间戳>`，从空库继续，并推一条恢复事件。
 - 归档区只保留最近 200 条（置顶的除外），所以「归档」不是「永久保存」，要留就置顶。
+- 导入覆盖前会把当前存档复制成 `entries.json.bak-<时间戳>`；合并导入也会备份（同目录、同前缀）。
 
 ## 边界
 
@@ -137,14 +154,15 @@
 - 不替别的 World 记状态：机械计算副本留在各自的 World 里，这里只放语义记忆。
 - 单实例：多个 bot 各有一份 `dataDir` 下的存档，不做跨实例同步。
 - 过期不自动删：到期只是标记与提醒，留不留由模型判断（续期 `ink_amend`，不要了 `ink_forget`）；**事实是否还成立，这个 World 不判断**。
+- 导入导出只在面板里：工具参数塞不下几百条 JSON，也不该让模型转述整份存档。覆盖导入是唯一会「改存量」的人工操作，所以必须二次确认。
 
 ## 开发
 
 ```bash
 pnpm typecheck                 # 主项目 + 面板两个 tsconfig
-pnpm test                      # vitest，90 个用例
+pnpm test                      # vitest，114 个用例
 pnpm build:webui               # esbuild 打 dist/webui.js
-node _dev/verify.mjs           # 无依赖行为自检（99 项，不需要 pnpm）
+node _dev/verify.mjs           # 无依赖行为自检（110 项，不需要 pnpm）
 node _dev/gen-describe.mjs     # 重新生成 describe.json
 ```
 
@@ -182,4 +200,6 @@ node node_modules/tsx/dist/cli.mjs _dev/host-check.ts
 - 有效期按**天**算，写入时一次定下（`ttlDays` + `expiresAt`）；没有「每周」「到下个月底」这类表达，也没有按事件触发的到期。
 - 过期降权是固定 `-0.8`（排在新鲜条目之后，但不隐藏），不是按逾期时长递增。
 - 星图是**静态布局**：位置由 id 哈希 + 一次排斥松弛算出来，不跟着新条目「生长」；最多画 800 个点，标签圈最多 8 个（其余标签的点仍会画，只是没有圈）。
-- 没有导出/迁移命令：换机就拷 `entries.json`（`vectors.json` 可丢）。
+- 查重只比正文：不比较标签/来源/重要度，也不做语义判断——「换了关键信息」的改写（周三→周五）会被当成新条目，而不是冲突提醒。
+- 去重是拦写入，不是合并重复：`merge` 模式只是把新正文追加到旧条目后面（超长会失败），不会重写标签或重要度。
+- 导入只认淡墨快照（或「有 entries 数组」的 JSON），不做 Markdown/CSV 导入；`replace` 是全量覆盖，没有「按标签导入」。

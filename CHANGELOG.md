@@ -1,3 +1,14 @@
+## 0.6.0
+
+- **事件默认静音**：新增配置 `eventLevel`（`quiet` / `normal`，默认 `quiet`）。`quiet` 只发系统事件（`loaded`、`store.recovered`、`reminder.*`、`embed.*`、`evicted`、`maintenance.swept`）；`normal` 才把 `added` / `amended` / `recalled` / `purged` / `archived` 这些「自己动作的回声」也发出来。`describe.json` 仍声明全部 15 个事件。
+- **自动整理合并成一条事件**：`runMaintenance()` 一轮只推一条 `ink.maintenance.swept`（归档数、久未取用/内容重复各几条、最多 5 个样本 id），不再逐条发 `archived`。
+- **写入前查重**（`src/dedupe.ts`，纯函数）：`simhash64()` 指纹（中文 2-gram + 拉丁词，FNV-1a 64 位）+ Jaccard + 包含度三把尺子；`dedupeMode`（`warn` / `merge` / `off`，默认 `warn`）与 `dedupeThreshold`（默认 0.82）可热改；`ink_remember` 新增 `force` 参数。命中时 `warn` 不写、回旧 id 与相似度；`merge` 把新正文追加进旧条目。
+- **数据面板导入导出**（第四个页签 `data`，唯一会改存档的人工操作）：
+  - `status` / `export`（快照 JSON，含归档；不含向量；前端 Blob 下载）/ `preview`（预演，与真正导入共用 `planImport`）/ `import`。
+  - `merge` 本地优先：同 id 跳过、内容几乎重复跳过、只补新的；`replace` 让本地只剩文件里那些，必须输入「替换」，写盘前自动备份成 `entries.json.bak-<时间戳>`。
+  - 导入上限 5000 条；非法条目只计数不中断；`replace` 后清理孤儿向量。
+- 测试：114 个用例（world 29 / dedupe 9 / transfer 6 / starmap-layout 10 / search 13 / cron 12 / embedding 11 / maintenance 15 / vector 6）；`_dev/verify.mjs` 110 项。
+
 ## 0.5.0
 
 - **记忆星图**：第三个页签 `starmap`（只读）。每条记忆一个点，标签画成引力圈，**不画线**。

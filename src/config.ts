@@ -29,6 +29,13 @@ export interface InkConfigSection {
   /** 允许 ink_forget 带 purge=true 真正删除。 */
   hardDeleteOnForget: boolean;
 
+  /** 事件档位：quiet 只发系统事件，normal 连每条写入/取用/归档也发。 */
+  eventLevel: 'quiet' | 'normal';
+  /** 写入前查重：warn 只提示不写，merge 并入旧条目，off 不查。 */
+  dedupeMode: 'warn' | 'merge' | 'off';
+  /** 查重的 Jaccard 阈值（0.5–0.99）。 */
+  dedupeThreshold: number;
+
   /** 打开语义检索；关闭或调用失败时退回字面检索。 */
   semanticEnabled: boolean;
   /** `openai` = OpenAI 兼容的 /v1/embeddings；`ollama` = Ollama 的 /api/embed。 */
@@ -91,6 +98,11 @@ export const INK_DEFAULTS: InkConfigSection = {
   searchLimit: 8,
   defaultImportance: 2,
   hardDeleteOnForget: false,
+
+  // 事件默认静音：写入/取用/归档的回声对模型没信息量，只留系统级事件。
+  eventLevel: 'quiet',
+  dedupeMode: 'warn',
+  dedupeThreshold: 0.82,
 
   semanticEnabled: false,
   embedProtocol: 'openai',
@@ -160,6 +172,31 @@ export const INK_CONFIG_GROUP: ConfigGroup = {
         type: 'boolean',
         title: '允许真正删除',
         description: '关着时 ink_forget 只能归档；打开后才允许 purge=true 物理删除条目，删了不可恢复。',
+        'x-hot': true,
+      },
+      'worlds.thepalestink.eventLevel': {
+        type: 'string',
+        title: '事件档位',
+        description:
+          'quiet（默认）= 只发加载、提醒、嵌入、容量淘汰、自动整理这些系统事件；normal = 连每条「记下/修订/取用/归档/删除」也发。模型自己动作的回声用处不大，但时间线上看得到全过程。',
+        enum: ['quiet', 'normal'],
+        'x-hot': true,
+      },
+      'worlds.thepalestink.dedupeMode': {
+        type: 'string',
+        title: '写入查重',
+        description:
+          'warn（默认）= 发现几乎重复就不写，回执里给旧 id 与相似度，模型可用 ink_amend 改旧的或带 force 坚持写；merge = 自动把新正文并到旧条目末尾；off = 不查重。',
+        enum: ['warn', 'merge', 'off'],
+        'x-hot': true,
+      },
+      'worlds.thepalestink.dedupeThreshold': {
+        type: 'number',
+        title: '查重阈值',
+        description: '特征重合度到多少算「几乎重复」（0.5–0.99）。调低会拦下更多「主题相近」的新条目，调高只拦几乎逐字相同的。',
+        minimum: 0.5,
+        maximum: 0.99,
+        multipleOf: 0.01,
         'x-hot': true,
       },
 
