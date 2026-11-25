@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { cosine, planQuery, searchEntries, tokenize } from '../src/search.ts';
+import { cosine, pickByMood, planQuery, searchEntries, tokenize } from '../src/search.ts';
 import type { MemoryEntry } from '../src/types.ts';
 
 const BASE: MemoryEntry = {
   id: 'mem_base',
   text: '',
   kind: 'note',
+  mood: 'neutral',
   tags: [],
   source: '',
   importance: 2,
@@ -153,5 +154,29 @@ describe('cosine', () => {
     expect(cosine([1, 0], [0, 3])).toBe(0);
     expect(cosine([0, 0], [1, 1])).toBe(0);
     expect(cosine([1, 2], [1, 2, 3])).toBe(0);
+  });
+});
+
+describe('情绪过滤与取回', () => {
+  const entries = [
+    entry({ id: 'mem_low_1', text: '对方说这周很难熬', mood: 'low', importance: 3 }),
+    entry({ id: 'mem_low_2', text: '面试没过，但还撑得住', mood: 'low', importance: 1 }),
+    entry({ id: 'mem_happy', text: '项目上线了', mood: 'happy', importance: 4 }),
+    entry({ id: 'mem_old_low', text: '旧的低落', mood: 'low', archived: true }),
+  ];
+
+  it('searchEntries 只看指定情绪', () => {
+    const hits = searchEntries(entries, { query: '', mood: 'low', includeArchived: false, now: NOW });
+    expect(hits.map((hit) => hit.entry.id)).toEqual(['mem_low_1', 'mem_low_2']);
+  });
+
+  it('pickByMood 按重要度、取用次数、最近更新排，且不含归档', () => {
+    const picked = pickByMood(entries, 'low', 5);
+    expect(picked.map((item) => item.id)).toEqual(['mem_low_1', 'mem_low_2']);
+  });
+
+  it('pickByMood 受上限限制', () => {
+    expect(pickByMood(entries, 'low', 1).map((item) => item.id)).toEqual(['mem_low_1']);
+    expect(pickByMood(entries, 'happy', 5).map((item) => item.id)).toEqual(['mem_happy']);
   });
 });

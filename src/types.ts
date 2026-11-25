@@ -25,12 +25,37 @@ export function isMemoryKind(value: unknown): value is MemoryKind {
   return typeof value === 'string' && (MEMORY_KINDS as readonly string[]).includes(value);
 }
 
+/** 情绪标签。模型按写下这条记忆时的语气自己标，不填就是 neutral。 */
+export const MEMORY_MOODS = ['warm', 'happy', 'low', 'serious', 'playful', 'clingy', 'neutral'] as const;
+
+export type MemoryMood = (typeof MEMORY_MOODS)[number];
+
+/** 没标情绪时的取值。 */
+export const DEFAULT_MOOD: MemoryMood = 'neutral';
+
+/** 情绪在提示词、回执与面板里的中文说法。 */
+export const MOOD_LABELS: Readonly<Record<MemoryMood, string>> = {
+  warm: '温柔',
+  happy: '开心',
+  low: '低落',
+  serious: '认真',
+  playful: '玩笑',
+  clingy: '黏人',
+  neutral: '平静',
+};
+
+export function isMemoryMood(value: unknown): value is MemoryMood {
+  return typeof value === 'string' && (MEMORY_MOODS as readonly string[]).includes(value);
+}
+
 /** 一条记忆。 */
 export interface MemoryEntry {
   id: string;
   /** 正文，1–2000 字。 */
   text: string;
   kind: MemoryKind;
+  /** 写下这条记忆时的语气；旧档没有这个字段时按 neutral 补。 */
+  mood: MemoryMood;
   tags: string[];
   /** 来源：哪次对话、哪份文件、谁说的。空字符串表示没记。 */
   source: string;
@@ -95,5 +120,11 @@ export interface MemoryCounts {
 /** 标签榜的一项。 */
 export interface TagCount {
   tag: string;
+  count: number;
+}
+
+/** 情绪分布的一项。 */
+export interface MoodCount {
+  mood: MemoryMood;
   count: number;
 }

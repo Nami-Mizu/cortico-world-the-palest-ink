@@ -17,10 +17,10 @@ import { DEDUPE_JACCARD, describeDuplicate, findDuplicate } from './dedupe.ts';
 import { EmbeddingClient, EmbeddingError, type EmbeddingSettings, type FetchLike } from './embedding.ts';
 import { INK_EVENTS, type InkEventType } from './events.ts';
 import { planMaintenance, type ArchiveDecision } from './maintenance.ts';
-import { planQuery, searchEntries, type SearchHit } from './search.ts';
+import { pickByMood, planQuery, searchEntries, type SearchHit } from './search.ts';
 import { MAX_TEXT_LENGTH, MemoryStore } from './store.ts';
 import { buildSnapshot, MAX_IMPORT_ENTRIES, parseSnapshot, planImport, TRANSFER_SCHEMA, type ImportPlan } from './transfer.ts';
-import { KIND_LABELS, MAX_TTL_DAYS, MEMORY_KINDS, isExpired, overdueDays, type MemoryEntry, type MemoryKind } from './types.ts';
+import { KIND_LABELS, MAX_TTL_DAYS, MEMORY_KINDS, MEMORY_MOODS, MOOD_LABELS, isExpired, isMemoryMood, overdueDays, type MemoryEntry, type MemoryKind, type MemoryMood } from './types.ts';
 import { clampInt, collapse, estimateTokens, nowIso, truncate } from './util.ts';
 import { VectorStore, describeEmbedTarget } from './vector.ts';
 import { MAX_LAYOUT_POINTS } from './webui/starmap-layout.ts';
@@ -57,6 +57,14 @@ const KIND_PARAM = {
   description: '种类：fact 事实 / event 事件 / preference 偏好 / todo 待办 / note 杂记。缺省 note。',
 };
 
+const MOOD_PARAM = {
+  type: 'string',
+  enum: [...MEMORY_MOODS],
+  description:
+    '情绪：warm 温柔 / happy 开心 / low 低落 / serious 认真 / playful 玩笑 / clingy 黏人 / neutral 平静。' +
+    '按这条记忆发生时的语气标，拿不准就不填（缺省 neutral）。',
+};
+
 export interface InkWorldOptions {
   cfg: InkConfigSection;
   timezone: string;
@@ -83,6 +91,7 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       '把一条值得长期记住的事写进记忆库，返回条目 id。正文用一句到几句话写清「谁、什么时候、发生了什么、为什么重要」；不要写寒暄、不要写自己刚读过的原文。' +
       '标签选稳定的名词（人名、项目、主题），重要度 0–5：0 = 随手记，3 = 以后会反复用到，5 = 长期设定。同一件事已经记过时用 ink_amend 改，不要重复写。' +
       '只是暂时有效的（行程、临时安排、会变的偏好）给 expiresInDays 标个大概天数；到期会提醒你决定续期还是归档。' +
+      '用 mood 标这件事发生时的语气（开心、低落、温柔……），以后可以按情绪取回来；拿不准就不填。' +
       '写入前会查重：如果和已有条目几乎重复，这次不写，回执会给出旧 id 与相似度——改旧的用 ink_amend；确认是另一件事时再带 force 重写。',
     tags: ['write'],
     parameters: {
@@ -90,6 +99,7 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       properties: {
         text: { type: 'string', description: '记忆正文，1–2000 字。' },
         kind: KIND_PARAM,
+        mood: MOOD_PARAM,
         tags: TAGS_PARAM,
         source: { type: 'string', description: '来源：哪次对话、哪份文件、谁说的。80 字以内。' },
         importance: { type: 'integer', minimum: 0, maximum: 5, description: '重要度 0–5，缺省读配置 defaultImportance（默认 2）。' },
@@ -113,15 +123,16 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     name: 'ink_search',
     description:
       '按关键词检索记忆库，返回带 id 的摘要行。多个词之间是「都要命中」（AND）；中文按子串与相邻两字匹配，英文不分大小写。' +
-      '开了语义检索时，意思相近但字面不同的条目也会被找出来。可用 tags（这些标签都要有）、kind、includeArchived 收窄范围。' +
+      '开了语义检索时，意思相近但字面不同的条目也会被找出来。可用 tags（这些标签都要有）、kind、mood（只看某种情绪）、includeArchived 收窄范围。' +
       '命中很少时先换同义词或删掉标签，再看 ink_list。只给 tags/kind、不给 query 时按最近更新返回。结果只给摘要，要全文用 ink_recall。',
     tags: ['read'],
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '检索词，空格分隔多个词；空串表示只按 tags/kind 过滤。' },
+        query: { type: 'string', description: '检索词，空格分隔多个词；空串表示只按 tags/kind/mood 过滤。' },
         tags: TAGS_PARAM,
         kind: KIND_PARAM,
+        mood: MOOD_PARAM,
         limit: { type: 'integer', minimum: 1, maximum: 50, description: '返回几条，缺省读配置 searchLimit（默认 8）。' },
         includeArchived: { type: 'boolean', description: '连归档一起找，缺省 false。' },
       },
@@ -145,10 +156,26 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     },
   },
   {
+    name: 'ink_mood',
+    description:
+      '按情绪取回几条记忆，回复前用：先判断对方这句话（或上一句）是什么情绪，再调一次，回执就是这次回复可以直接用的 5 条。' +
+      '排序是重要度优先、其次被取用多的、再按最近更新；只取未归档。回执只是给你看的素材，不要整段复述，也不要把它当成新消息回应。',
+    tags: ['read'],
+    parameters: {
+      type: 'object',
+      properties: {
+        mood: MOOD_PARAM,
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: '取几条，缺省 5。' },
+      },
+      required: ['mood'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'ink_amend',
     description:
       '按 id 修订一条记忆：给哪个字段就改哪个，没给的保持原样；改完更新修订时间。正文整体替换，不做增量拼接。' +
-      '只改一个细节时也要把完整正文写进来。找不到 id 时先用 ink_search 确认。给 expiresInDays 可以改有效期（续期或取消时效）。',
+      '只改一个细节时也要把完整正文写进来。找不到 id 时先用 ink_search 确认。给 expiresInDays 可以改有效期（续期或取消时效），给 mood 可以改情绪标签。',
     tags: ['write'],
     parameters: {
       type: 'object',
@@ -156,6 +183,7 @@ export const INK_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
         id: { type: 'string', description: '要改的条目 id。' },
         text: { type: 'string', description: '新的完整正文，1–2000 字。' },
         kind: KIND_PARAM,
+        mood: MOOD_PARAM,
         tags: TAGS_PARAM,
         source: { type: 'string', description: '新的来源说明，80 字以内。' },
         importance: { type: 'integer', minimum: 0, maximum: 5, description: '新的重要度 0–5。' },
@@ -324,6 +352,7 @@ export class ThePalestInkWorld implements World {
       ink_remember: (args, ctx) => this.remember(args, ctx),
       ink_search: (args, ctx) => this.search(args, ctx),
       ink_recall: (args, ctx) => this.recall(args, ctx),
+      ink_mood: (args, ctx) => this.mood(args, ctx),
       ink_amend: (args, ctx) => this.amend(args, ctx),
       ink_forget: (args, ctx) => this.forget(args, ctx),
       ink_expired: (args, ctx) => this.expired(args, ctx),
@@ -648,6 +677,7 @@ export class ThePalestInkWorld implements World {
       const result = this.store.add({
         text,
         kind,
+        mood: this.readMood(args.mood),
         tags: this.readTags(args.tags),
         source: this.readSource(args.source),
         importance: args.importance === undefined ? undefined : clampInt(args.importance, 0, 5, this.opts.cfg.defaultImportance),
@@ -656,7 +686,9 @@ export class ThePalestInkWorld implements World {
         expiresInDays: args.expiresInDays === undefined ? undefined : clampInt(args.expiresInDays, 0, MAX_TTL_DAYS, 0),
       });
       const { entry, evicted } = result;
-      const lines = [`已记下 ${entry.id}（${KIND_LABELS[entry.kind]}，重要度 ${entry.importance}）：「${truncate(entry.text, PREVIEW_CHARS)}」`];
+      const lines = [
+        `已记下 ${entry.id}（${KIND_LABELS[entry.kind]}·${MOOD_LABELS[entry.mood]}，重要度 ${entry.importance}）：「${truncate(entry.text, PREVIEW_CHARS)}」`,
+      ];
       if (entry.tags.length) lines.push(`标签：#${entry.tags.join(' #')}`);
       if (entry.ttlDays > 0 && entry.expiresAt) {
         lines.push(`有效期 ${entry.ttlDays} 天，${entry.expiresAt.slice(0, 10)} 到期（不会自动删，到整理时间会提醒你处理）。`);
@@ -679,15 +711,17 @@ export class ThePalestInkWorld implements World {
       const query = typeof args.query === 'string' ? collapse(args.query) : '';
       const tags = this.readTags(args.tags);
       const kind = this.readKind(args.kind);
+      const mood = this.readMood(args.mood);
       const includeArchived = args.includeArchived === true;
-      if (!query && !tags?.length && !kind && !includeArchived) {
-        throw new Error('query 为空、也没给 tags 或 kind。要按内容找就给关键词，要浏览最近条目请用 ink_list。');
+      if (!query && !tags?.length && !kind && !mood && !includeArchived) {
+        throw new Error('query 为空、也没给 tags / kind / mood。要按内容找就给关键词，要浏览最近条目请用 ink_list。');
       }
       const limit = this.readLimit(args.limit);
       const { hits, degraded, semantic } = await this.runSearch({
         query,
         tags,
         kind,
+        mood,
         limit,
         includeArchived,
       });
@@ -697,8 +731,8 @@ export class ThePalestInkWorld implements World {
         return `没有找到${what}记忆。${hint}可以换同义词、去掉标签过滤，或用 ink_list 看最近写了什么。`;
       }
       const head = query
-        ? `找到 ${hits.length} 条（关键词：${query}${semantic ? '，含语义' : ''}）：`
-        : `按最近修订列出 ${hits.length} 条：`;
+        ? `找到 ${hits.length} 条（关键词：${query}${mood ? `，情绪：${MOOD_LABELS[mood]}` : ''}${semantic ? '，含语义' : ''}）：`
+        : `按最近修订列出 ${hits.length} 条${mood ? `（情绪：${MOOD_LABELS[mood]}）` : ''}：`;
       const lines = [head, ...hits.map((hit, index) => this.entryLine(index + 1, hit.entry))];
       if (hits.some((hit) => hit.expired)) {
         lines.push('（带「⏳ 已过期」的内容可能已经不准：仍然可以读，但别直接当现状用；确定还成立就用 ink_amend 续期，不成立就改正文或 ink_forget 归档。）');
@@ -720,12 +754,34 @@ export class ThePalestInkWorld implements World {
     });
   }
 
-  private async amend(args: Record<string, unknown>, _ctx: ToolCallContext): Promise<string | ToolOutcome> {
+  /** 回复前按情绪取 5 条；同情绪的条目按重要度、取用次数、最近更新排。 */
+  private async mood(args: Record<string, unknown>, _ctx: ToolCallContext): Promise<string | ToolOutcome> {
     return this.guard(async () => {
+      const mood = this.readMood(args.mood);
+      if (!mood) throw new Error(`没给情绪。可用：${MEMORY_MOODS.map((item) => `${item}（${MOOD_LABELS[item]}）`).join('、')}。`);
+      const limit = clampInt(args.limit, 1, 20, 5);
+      const picked = pickByMood(this.store.all(), mood, limit);
+      if (!picked.length) {
+        return `还没有标成「${MOOD_LABELS[mood]}」的记忆。这条对话可以照常回；值得留下时用 ink_remember 顺便标上 mood。`;
+      }
+      const lines = [
+        `「${MOOD_LABELS[mood]}」的 ${picked.length} 条（这次回复可以用，不要整段复述）：`,
+        ...picked.map((entry, index) => this.entryLine(index + 1, entry)),
+      ];
+      if (picked.some((entry) => isExpired(entry, this.now()))) {
+        lines.push('（带「⏳ 已过期」的先核实再引用。）');
+      }
+      lines.push('要全文用 ink_recall（带上面那个 id）。');
+      return lines.join('\n');
+    });
+  }
+
+  private async amend(args: Record<string, unknown>, _ctx: ToolCallContext): Promise<string | ToolOutcome> {    return this.guard(async () => {
       const id = this.readId(args.id);
       const patch = {
         ...(args.text !== undefined ? { text: this.readText(args.text) } : {}),
         ...(args.kind !== undefined ? { kind: this.readKind(args.kind) } : {}),
+        ...(args.mood !== undefined ? { mood: this.readMood(args.mood) ?? 'neutral' } : {}),
         ...(args.tags !== undefined ? { tags: this.readTags(args.tags) ?? [] } : {}),
         ...(args.source !== undefined ? { source: this.readSource(args.source) } : {}),
         ...(args.importance !== undefined ? { importance: clampInt(args.importance, 0, 5, this.opts.cfg.defaultImportance) } : {}),
@@ -733,7 +789,7 @@ export class ThePalestInkWorld implements World {
         ...(args.expiresInDays !== undefined ? { expiresInDays: clampInt(args.expiresInDays, 0, MAX_TTL_DAYS, 0) } : {}),
       };
       if (!Object.keys(patch).length) {
-        throw new Error('没有给要改的字段。至少给 text、tags、kind、importance、pinned、source、expiresInDays 里的一个。');
+        throw new Error('没有给要改的字段。至少给 text、tags、kind、mood、importance、pinned、source、expiresInDays 里的一个。');
       }
       const entry = this.store.update(id, patch);
       if (!entry) return this.notFound(id);
@@ -742,7 +798,7 @@ export class ThePalestInkWorld implements World {
       const ttl = entry.ttlDays > 0 && entry.expiresAt
         ? `有效期 ${entry.ttlDays} 天，${entry.expiresAt.slice(0, 10)} 到期。`
         : '不设时效（永久）。';
-      return `已修订 ${entry.id}（${KIND_LABELS[entry.kind]}，重要度 ${entry.importance}）：「${truncate(entry.text, PREVIEW_CHARS)}」${ttl}`;
+      return `已修订 ${entry.id}（${KIND_LABELS[entry.kind]}·${MOOD_LABELS[entry.mood]}，重要度 ${entry.importance}）：「${truncate(entry.text, PREVIEW_CHARS)}」${ttl}`;
     });
   }
 
@@ -828,10 +884,13 @@ export class ThePalestInkWorld implements World {
       const tags = this.store.topTags(8);
       const recalled = this.store.mostRecalled(3);
       const kindLine = MEMORY_KINDS.map((kind) => `${KIND_LABELS[kind]} ${byKind[kind]}`).join(' · ');
+      const moods = this.store.byMood();
+      const moodLine = moods.length ? moods.map(({ mood, count }) => `${MOOD_LABELS[mood]} ${count}`).join(' · ') : '（还没标过）';
       const lines = [
         `未归档 ${counts.live} 条 / 归档 ${counts.archived} 条 / 置顶 ${counts.pinned} 条（上限 ${this.store.limit()} 条）`,
         `过期待整理：${this.store.expiredCount(this.now())} 条`,
         `种类：${kindLine}`,
+        `情绪：${moodLine}`,
         `标签榜：${tags.length ? tags.map(({ tag, count }) => `${tag}(${count})`).join('、') : '（空）'}`,
         `最常取用：${recalled.length ? recalled.map((entry) => `${entry.id}（${entry.recallCount} 次）`).join('、') : '（还没有）'}`,
         `语义索引：${this.indexLine()}`,
@@ -1012,6 +1071,7 @@ export class ThePalestInkWorld implements World {
     query: string;
     tags?: string[];
     kind?: MemoryKind;
+    mood?: MemoryMood;
     limit: number;
     includeArchived: boolean;
   }): Promise<{ hits: SearchHit[]; degraded: string | null; semantic: boolean }> {
@@ -1037,6 +1097,7 @@ export class ThePalestInkWorld implements World {
       query: input.query,
       tags: input.tags,
       kind: input.kind,
+      mood: input.mood,
       limit: input.limit,
       includeArchived: input.includeArchived,
       semantic,
@@ -1237,6 +1298,7 @@ export class ThePalestInkWorld implements World {
       counts,
       limit: this.store.limit(),
       kinds: MEMORY_KINDS.map((kind) => ({ kind, label: KIND_LABELS[kind], count: byKind[kind] })),
+      moods: this.store.byMood().map(({ mood, count }) => ({ mood, label: MOOD_LABELS[mood], count })),
       tags: this.store.topTags(12),
       recent,
       expired: {
@@ -1396,6 +1458,8 @@ export class ThePalestInkWorld implements World {
       fullLength: Array.from(entry.text).length,
       kind: entry.kind,
       kindLabel: KIND_LABELS[entry.kind],
+      mood: entry.mood,
+      moodLabel: MOOD_LABELS[entry.mood],
       tags: entry.tags,
       importance: entry.importance,
       pinned: entry.pinned,
@@ -1597,7 +1661,7 @@ export class ThePalestInkWorld implements World {
 
   private entryLine(index: number, entry: MemoryEntry): string {
     const expired = isExpired(entry, this.now());
-    const flags = [KIND_LABELS[entry.kind], `重要度 ${entry.importance}`];
+    const flags = [KIND_LABELS[entry.kind], MOOD_LABELS[entry.mood], `重要度 ${entry.importance}`];
     if (expired) flags.push('⏳ 已过期');
     if (entry.pinned) flags.push('置顶');
     if (entry.archived) flags.push('已归档');
@@ -1607,7 +1671,7 @@ export class ThePalestInkWorld implements World {
 
   private entryBlock(entry: MemoryEntry): string {
     const expired = isExpired(entry, this.now());
-    const flags = [KIND_LABELS[entry.kind], `重要度 ${entry.importance}`];
+    const flags = [KIND_LABELS[entry.kind], MOOD_LABELS[entry.mood], `重要度 ${entry.importance}`];
     if (expired) flags.push('⏳ 已过期，待整理');
     if (entry.pinned) flags.push('置顶');
     if (entry.archived) flags.push(`已归档：${entry.archiveReason ?? '未写原因'}`);
@@ -1653,6 +1717,14 @@ export class ThePalestInkWorld implements World {
       throw new Error(`未知的种类「${String(value)}」；可用：${MEMORY_KINDS.map((kind) => `${kind}（${KIND_LABELS[kind]}）`).join('、')}。`);
     }
     return value as MemoryKind;
+  }
+
+  private readMood(value: unknown): MemoryMood | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (!isMemoryMood(value)) {
+      throw new Error(`未知的情绪「${String(value)}」；可用：${MEMORY_MOODS.map((mood) => `${mood}（${MOOD_LABELS[mood]}）`).join('、')}。`);
+    }
+    return value;
   }
 
   private readTags(value: unknown): string[] | undefined {

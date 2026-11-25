@@ -829,3 +829,74 @@ describe('淡墨 · 0.6.0：静音、查重与导入导出', () => {
     await world.stop();
   });
 });
+
+describe('淡墨 · 0.7.0：情绪记忆', () => {
+  function moodWorld(ctx: { dataDir: string }): ThePalestInkWorld {
+    return new ThePalestInkWorld({ cfg: { ...INK_DEFAULTS }, timezone: 'Asia/Shanghai', dataDir: ctx.dataDir });
+  }
+
+  it('写入时带 mood，回执里有情绪；不填默认 neutral', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = moodWorld(ctx);
+    await world.start(new FakeHost());
+
+    const low = textOf(await tool(world, 'ink_remember').handler({ text: '面试没过，但还撑得住。', mood: 'low' }, CALL));
+    expect(low).toContain('低落');
+    const plain = textOf(await tool(world, 'ink_remember').handler({ text: '今天吃了拉面。' }, CALL));
+    expect(plain).toContain('平静');
+
+    const bad = await tool(world, 'ink_remember').handler({ text: '随便。', mood: 'angry' }, CALL);
+    expect(failedOf(bad)).toBe(true);
+    expect(textOf(bad)).toContain('未知的情绪');
+    await world.stop();
+  });
+
+  it('ink_mood 回复前取 5 条：同情绪、重要度优先、不含归档', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = moodWorld(ctx);
+    await world.start(new FakeHost());
+
+    for (let index = 0; index < 6; index += 1) {
+      await tool(world, 'ink_remember').handler({ text: `低落的事 ${index}`, mood: 'low', importance: index, force: true }, CALL);
+    }
+    await tool(world, 'ink_remember').handler({ text: '高兴的事。', mood: 'happy', importance: 5, force: true }, CALL);
+    const archived = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '归档的低落。', mood: 'low', importance: 5, force: true }, CALL)));
+    await tool(world, 'ink_forget').handler({ id: archived }, CALL);
+
+    const result = textOf(await tool(world, 'ink_mood').handler({ mood: 'low' }, CALL));
+    expect(result).toContain('「低落」的 5 条');
+    expect(result).not.toContain(archived);
+    expect(result).not.toContain('高兴的事');
+    expect(result).toContain('低落的事 5');
+    await world.stop();
+  });
+
+  it('没有任何同情绪条目时给一句空话，不报错', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = moodWorld(ctx);
+    await world.start(new FakeHost());
+    const result = textOf(await tool(world, 'ink_mood').handler({ mood: 'clingy' }, CALL));
+    expect(result).toContain('还没有标成「黏人」的记忆');
+    await world.stop();
+  });
+
+  it('amend 能改情绪；search 能按情绪过滤；stats 与面板有情绪分布', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = moodWorld(ctx);
+    await world.start(new FakeHost());
+
+    const id = idFrom(textOf(await tool(world, 'ink_remember').handler({ text: '对方说这周很难熬。', mood: 'low' }, CALL)));
+    await tool(world, 'ink_amend').handler({ id, mood: 'warm' }, CALL);
+    const found = textOf(await tool(world, 'ink_search').handler({ mood: 'warm' }, CALL));
+    expect(found).toContain(id);
+    expect(found).toContain('情绪：温柔');
+
+    const stats = textOf(await tool(world, 'ink_stats').handler({}, CALL));
+    expect(stats).toContain('温柔 1');
+
+    const snapshot = await panel(world, 'library', 'snapshot');
+    const moods = (snapshot.data as { moods: Array<{ mood: string; count: number }> }).moods;
+    expect(moods).toEqual([{ mood: 'warm', label: '温柔', count: 1 }]);
+    await world.stop();
+  });
+});

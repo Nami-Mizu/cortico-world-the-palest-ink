@@ -15,6 +15,10 @@ export interface PanelEntry {
   fullLength: number;
   kind: string;
   kindLabel: string;
+  /** 情绪标签的键（warm / happy / ...）。 */
+  mood: string;
+  /** 情绪标签的中文名。 */
+  moodLabel: string;
   tags: string[];
   importance: number;
   pinned: boolean;
@@ -132,6 +136,7 @@ export interface LibrarySnapshot {
   counts: PanelCounts;
   limit: number;
   kinds: Array<{ kind: string; label: string; count: number }>;
+  moods: Array<{ mood: string; label: string; count: number }>;
   tags: TagCount[];
   recent: PanelEntry[];
   /** 已过期、待整理的条目（只读展示，处理要由模型或人通过工具做）。 */

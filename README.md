@@ -33,20 +33,21 @@
 
 | 工具 | 标签 | 用途 |
 | --- | --- | --- |
-| `ink_remember` | write | 写一条记忆，返回 id；可选 `expiresInDays` 标有效期；写入前查重，重复时回失败与旧 id，带 `force` 可硬写 |
-| `ink_search` | read | 按关键词/标签/种类检索，回摘要行；开语义时同时算向量分，过期条目标「⏳」 |
+| `ink_remember` | write | 写一条记忆，返回 id；可选 `expiresInDays` 标有效期、`mood` 标情绪；写入前查重，重复时回失败与旧 id，带 `force` 可硬写 |
+| `ink_search` | read | 按关键词/标签/种类/情绪检索，回摘要行；开语义时同时算向量分，过期条目标「⏳」 |
 | `ink_recall` | read | 按 id 读全文，并记一次取用 |
-| `ink_amend` | write | 按 id 修订正文、标签、种类、来源、重要度、置顶、有效期（`expiresInDays`，0 = 永久） |
+| `ink_mood` | read | 按情绪取回几条（缺省 5 条）最相关的记忆，回复前用 |
+| `ink_amend` | write | 按 id 修订正文、标签、种类、情绪、来源、重要度、置顶、有效期（`expiresInDays`，0 = 永久） |
 | `ink_forget` | write | 归档一条记忆；配置允许时可物理删除 |
 | `ink_expired` | read | 列出已过期、未归档的条目（分页），带逾期天数 |
 | `ink_list` | read, snapshot | 按最近修订倒序列出 |
-| `ink_stats` | read, snapshot | 规模、种类分布、标签榜、被取用最多、过期待整理、语义索引状态、存档路径 |
+| `ink_stats` | read, snapshot | 规模、种类与情绪分布、标签榜、被取用最多、过期待整理、语义索引状态、存档路径 |
 
 ## 面板
 
 | 页签 | 方法 | 说明 |
 | --- | --- | --- |
-| 记忆库 | `snapshot` | 规模、过期待整理、种类分布、标签榜、最近 30 条、语义状态、写记忆的节奏 |
+| 记忆库 | `snapshot` | 规模、过期待整理、种类与情绪分布、标签榜、最近 30 条、语义状态、写记忆的节奏 |
 | 记忆库 | `search` | 复用工具那套检索（含语义与降级口径） |
 | 记忆库 | `entry` | 单条全文、来源、归档原因、是否已向量化 |
 | 星图 | `map` | 每条记忆一个点（正文截 60 字）、标签计数、按种类/标签/归档过滤 |
@@ -160,9 +161,9 @@
 
 ```bash
 pnpm typecheck                 # 主项目 + 面板两个 tsconfig
-pnpm test                      # vitest，115 个用例
+pnpm test                      # vitest，122 个用例
 pnpm build:webui               # esbuild 打 dist/webui.js
-node _dev/verify.mjs           # 无依赖行为自检（112 项，不需要 pnpm）
+node _dev/verify.mjs           # 无依赖行为自检（121 项，不需要 pnpm）
 node _dev/gen-describe.mjs     # 重新生成 describe.json
 ```
 

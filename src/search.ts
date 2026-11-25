@@ -9,7 +9,7 @@
  * 于是 `_dev/verify.mjs`、测试与面板都能复用同一套排序。
  */
 
-import { isExpired, type MemoryEntry, type MemoryKind } from './types.ts';
+import { isExpired, type MemoryEntry, type MemoryKind, type MemoryMood } from './types.ts';
 
 /** 一次检索最多认几个词（再多就当用户粘了一整段）。 */
 export const MAX_TERMS = 8;
@@ -27,6 +27,8 @@ export interface SearchOptions {
   tags?: readonly string[];
   /** 只看某个种类。 */
   kind?: MemoryKind;
+  /** 只看某一种情绪。 */
+  mood?: MemoryMood;
   /** 返回上限，默认 8。 */
   limit?: number;
   /** 是否连归档一起找，默认 false。 */
@@ -196,6 +198,7 @@ export function searchEntries(entries: readonly MemoryEntry[], opts: SearchOptio
   const pool = entries.filter((entry) => {
     if (!opts.includeArchived && entry.archived) return false;
     if (opts.kind && entry.kind !== opts.kind) return false;
+    if (opts.mood && entry.mood !== opts.mood) return false;
     if (wantedTags.length) {
       const tags = entry.tags.map((tag) => tag.toLowerCase());
       if (!wantedTags.every((tag) => tags.includes(tag))) return false;
@@ -276,4 +279,20 @@ export function searchEntries(entries: readonly MemoryEntry[], opts: SearchOptio
         a.entry.id.localeCompare(b.entry.id),
     )
     .slice(0, limit);
+}
+
+/** 按情绪取几条：重要度高的在前，其次是被取用多的、最近更新的。只取未归档。 */
+export function pickByMood(entries: readonly MemoryEntry[], mood: MemoryMood, limit = 5): MemoryEntry[] {
+  const cap = Math.min(MAX_RESULTS, Math.max(1, Math.round(limit)));
+  return entries
+    .filter((entry) => !entry.archived && entry.mood === mood)
+    .slice()
+    .sort(
+      (a, b) =>
+        b.importance - a.importance ||
+        b.recallCount - a.recallCount ||
+        b.updatedAt.localeCompare(a.updatedAt) ||
+        a.id.localeCompare(b.id),
+    )
+    .slice(0, cap);
 }

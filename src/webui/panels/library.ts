@@ -63,7 +63,7 @@ const panel: WebUiPanel = {
     sheet.body.append(msg);
 
     const table = ui.table({
-      head: ['编号', '摘要', '种类', '重要度', '最近修订', ''],
+      head: ['编号', '摘要', '种类', '情绪', '重要度', '最近修订', ''],
       maxHeight: 'calc(100vh - 360px)',
     });
     sheet.body.append(table.el);
@@ -86,6 +86,7 @@ const panel: WebUiPanel = {
         const meta = ui.kv([
           { k: '编号', v: entry.entry.id },
           { k: '种类', v: entry.entry.kindLabel },
+          { k: '情绪', v: entry.entry.moodLabel },
           { k: '重要度', v: entry.entry.importance },
           { k: '标签', v: entry.entry.tags.length ? `#${entry.entry.tags.join(' #')}` : '（无）' },
           { k: '来源', v: entry.source || '（未写）' },
@@ -125,6 +126,7 @@ const panel: WebUiPanel = {
           hit.id.slice(0, 14),
           hit.text || hit.tags.map((item) => `#${item}`).join(' '),
           hit.kindLabel,
+          hit.moodLabel,
           String(hit.importance),
           when(hit.updatedAt),
           ui.button('查看', { size: 'sm', onClick: () => void openEntry(hit.id) }),
@@ -179,8 +181,9 @@ const panel: WebUiPanel = {
         : '语义检索：关（只用字面匹配）。到「嵌入」页签可以接上本地或云端的嵌入模型。';
       embedLine.classList.toggle('bad', snapshot.embed.state === 'error');
       const kinds = snapshot.kinds.map((item) => `${item.label} ${item.count}`).join(' · ');
+      const moods = snapshot.moods.length ? snapshot.moods.map((item) => `${item.label} ${item.count}`).join(' · ') : '（还没标过）';
       const tags = snapshot.tags.length ? snapshot.tags.map((item) => `${item.tag}(${item.count})`).join('、') : '（还没有标签）';
-      note.textContent = `种类：${kinds}｜标签：${tags}｜过期待整理 ${snapshot.expired.count} 条｜存档：${snapshot.storeFile}`;
+      note.textContent = `种类：${kinds}｜情绪：${moods}｜标签：${tags}｜过期待整理 ${snapshot.expired.count} 条｜存档：${snapshot.storeFile}`;
       renderRows(snapshot.recent);
       if (snapshot.recent.length) {
         msg.textContent = `最近修订的 ${snapshot.recent.length} 条。`;

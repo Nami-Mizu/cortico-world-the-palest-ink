@@ -3,7 +3,7 @@
 - `cortico.api` 是 6（world 契约版本）。宿主升契约时先跑 `pnpm check:extension <本包目录>` 看它打印的版本。
 - 改了工具、事件或 `src/ENV_PROMPT.md`，要重跑 `pnpm describe:extension <本包目录>`，否则 `describe.json` 与代码不一致（check 会报）。本机没有 pnpm 时用 `node _dev/gen-describe.mjs` 重生成。
 - World id 固定 `thepalestink`（全小写、无连字符：WebUI 页 id 是 `world:thepalestink`，协议只接受小写字母数字与 `-`；事件 type 段内也不许连字符）。工具前缀固定 `ink_`，配置路径因此是 `worlds.thepalestink.*`。
-- 八个工具：`ink_remember` / `ink_search` / `ink_recall` / `ink_amend` / `ink_forget` / `ink_expired` / `ink_list` / `ink_stats`。面板四个页签：`library`（记忆库，只读）、`starmap`（星图，只读）、`embedding`（嵌入配置）、`data`（导入导出）。
+- 九个工具：`ink_remember` / `ink_search` / `ink_recall` / `ink_mood` / `ink_amend` / `ink_forget` / `ink_expired` / `ink_list` / `ink_stats`。面板四个页签：`library`（记忆库，只读）、`starmap`（星图，只读）、`embedding`（嵌入配置）、`data`（导入导出）。
 - 数据两份：`<dataDir>/thepalestink/entries.json`（`MEMORY_SCHEMA = 1`，删它等于清空记忆库）与 `<dataDir>/thepalestink/vectors.json`（`VECTOR_SCHEMA = 1`，删它只丢向量、不丢正文）。schema 升级要写迁移，不要静默丢弃旧字段。
 - 导入前会写备份：`entries.json.bak-<base36 时间戳>`，`store.backup()` 返回路径，`dataStatus().lastBackup` 给面板显示。备份只在导入时生成，不自动清理。
 - 写盘都是 `.tmp` + rename；坏档改名成 `*.broken-<时间戳>` 后空库继续，`store.recovery()` / `vectors.recovery()` 记着备份路径。
@@ -78,15 +78,24 @@
 - 服务端只返回点、标签圈与计数，**不返回坐标**——布局在客户端算，服务端不缓存。改 `panel-types.ts` 的 `StarPoint` 要同步改两端。
 - 面板客户端只能 `import type`；`ui.pill` 的 tone 只有 `'on' | 'off' | 'plain'`。
 
+## 情绪记忆
+
+- 情绪词表固定在 `src/types.ts` 的 `MEMORY_MOODS`（`warm` / `happy` / `low` / `serious` / `playful` / `clingy` / `neutral`），中文名在 `MOOD_LABELS`；`MemoryEntry.mood` 默认 `neutral`，旧档由 `coerceEntry()` 补。
+- 情绪是**模型自己标的**：宿主没有情绪字段（Cortico 契约 6 的 `World` / `WorldHost` / `RunPhase` 都没有），所以不要去找「宿主提供的情绪标签」。`ink_remember` / `ink_amend` 的 `mood` 由模型填，`ink_mood` 只负责按情绪取回。
+- `ink_mood` 是只读工具：`mood` 必填、`limit` 1–20（缺省 5），排序在 `pickByMood()`（`src/search.ts`）——只取未归档、严格同情绪，按重要度 → 取用次数 → `updatedAt` → id。回执只是素材，提示词里明确要求「不要整段复述，也不要当成新消息回应」。
+- 情绪**不参与**容量淘汰、自动归档、查重打分；它只是检索的一个过滤维度。`ink_search` 的 `mood` 过滤与 `ink_mood` 是两条路：前者可与关键词组合，后者就是「回复前取 5 条」的快捷方式。
+- 面板：记忆库表格有一列「情绪」，抽屉有「情绪」行，`snapshot.moods` 给 `{ mood, label, count }[]`；`ink_stats` 多一行「情绪：…」。改 `PanelEntry` 要同步 `panel-types.ts` 与 `panelEntry()` 两端。
+- 改这块先跑 `node _dev/verify.mjs`（有情绪段），再跑 `tests/search.test.ts` 的「情绪过滤与取回」与 `tests/world.test.ts` 的「情绪记忆」四条。
+
 ## 验证到哪一级
 
-- 行为自检：`node _dev/verify.mjs` → **112 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、八个工具、时效与过期、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档、星图布局、查重、静音、导入导出）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance/dedupe/transfer/starmap-layout 后先跑它。
+- 行为自检：`node _dev/verify.mjs` → **121 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、九个工具、时效与过期、情绪取回、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档、星图布局、查重、静音、导入导出）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance/dedupe/transfer/starmap-layout 后先跑它。
 - 类型检查：`tsc --noEmit`（主项目）与 `tsc -p tsconfig.webui.json --noEmit`（面板）**都通过，0 错误**。
-- 单元测试：`vitest run` → **115/115 通过**（`tests/world.test.ts` 30、`tests/dedupe.test.ts` 9、`tests/transfer.test.ts` 6、`tests/starmap-layout.test.ts` 10、`tests/search.test.ts` 13、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
-- 面板构建：`dist/webui.js` **约 60.5kb（61,990 B）**，esbuild 无警告。
+- 单元测试：`vitest run` → **122/122 通过**（`tests/world.test.ts` 34、`tests/dedupe.test.ts` 9、`tests/transfer.test.ts` 6、`tests/starmap-layout.test.ts` 10、`tests/search.test.ts` 16、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
+- 面板构建：`dist/webui.js` **约 61.2kb（62,648 B）**，esbuild 无警告。
 - **`pnpm` 曾经静默挂住，已修**：`package.json` 里锁的 `packageManager: pnpm@11.28.6` 与本机 12.23.0 不一致，pnpm 10+ 会按字段去取旧版，取不到就无声卡死（`pnpm --version` 正常，因为它不读项目）。改成 `pnpm@12.23.0` 后 `pnpm install` / `pnpm typecheck` / `pnpm test` / `pnpm build:webui` 全部正常，`pnpm-lock.yaml` 已入库。**改这个字段前先看 `pnpm --version`。**
 - **不要用 PowerShell 文本管道写文件**：会话里有个防双重编码的插件，`Get-Content x | Set-Content x`、`Out-File`、`cat x > y`、`Tee-Object` 会被直接拒绝执行（看起来像「用户拒绝了命令」），就算跑通也可能把中文按 ANSI 写坏。读用 `read`、写用 `write`/`edit`；脚本里必须读写文件时用 `[IO.File]::ReadAllText` / `[IO.File]::WriteAllText` 配 `[Text.UTF8Encoding]::new($false)`。
-- `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：8 个工具、6 个占位符、4 个面板、2 个配置组全部通过，`describe.json`（8 tools / 15 events / 1 prompt）与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。
+- `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：9 个工具、6 个占位符、4 个面板、2 个配置组全部通过，`describe.json`（9 tools / 15 events / 1 prompt）与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。
 - `defaults().enabled` 恒为 `false`：宿主 `dryMount` 会拿这条当警告，装不装、开不开由 bot 声明与部署决定。
 - 第三级（装进实例目击行为）：未做，待开发者。要看的现象：World 页多四个页签（记忆库 / 星图 / 嵌入 / 数据）、`ink_search` 回执、嵌入页「测试连接」出维度与耗时、星图里点和圈画得出来、数据页导出能下载、覆盖导入要打「替换」。
 

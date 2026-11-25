@@ -10,6 +10,7 @@ function entry(overrides: Partial<MemoryEntry> = {}): MemoryEntry {
     id: overrides.id ?? 'mem_top',
     text: '对方叫林照，负责淡墨这个记忆库项目。',
     kind: 'fact',
+    mood: 'neutral',
     tags: [],
     source: '',
     importance: 2,

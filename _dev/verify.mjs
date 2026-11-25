@@ -132,7 +132,7 @@ function tempDir() {
   const tools = world.tools();
   const byName = (name) => tools.find((tool) => tool.name === name);
 
-  check('工具数', tools.length === 8, `count=${tools.length}`);
+  check('工具数', tools.length === 9, `count=${tools.length}`);
   check('工具前缀', tools.every((tool) => /^ink_/.test(tool.name)));
   check('工具都有 handler', tools.every((tool) => typeof tool.handler === 'function'));
 
@@ -241,6 +241,47 @@ function tempDir() {
   const renewed = await byName('ink_amend').handler({ id, expiresInDays: 30 }, {});
   check('amend 能续期', String(renewed).includes('有效期 30 天'), String(renewed));
   check('续期后不再过期', String(await byName('ink_expired').handler({}, {})).includes('没有过期的记忆'));
+  await world.stop();
+}
+
+// ---------------------------------------------------------------- 情绪记忆
+{
+  const dir = tempDir();
+  const events = [];
+  const host = {
+    pushEvent: async (event) => {
+      events.push(event);
+      return { ...event, cursor: events.length };
+    },
+    log: { warn: () => {} },
+  };
+  const cfg = { ...INK_DEFAULTS };
+  const world = new ThePalestInkWorld({ cfg, timezone: 'Asia/Shanghai', dataDir: dir });
+  const byName = (name) => world.tools().find((tool) => tool.name === name);
+  await world.start(host);
+
+  const low = String(await byName('ink_remember').handler({ text: '面试没过，但还撑得住。', mood: 'low' }, {}));
+  check('写入回执带情绪', low.includes('低落'), low);
+  const other = String(await byName('ink_remember').handler({ text: '项目上线了。', mood: 'happy', importance: 5 }, {}));
+  check('另一种情绪分开记', other.includes('开心'), other);
+
+  const picked = String(await byName('ink_mood').handler({ mood: 'low' }, {}));
+  check('ink_mood 取回同情绪', picked.includes('「低落」的 1 条') && picked.includes('面试没过'), picked);
+  check('ink_mood 不串情绪', !picked.includes('项目上线了'), picked);
+
+  const filtered = String(await byName('ink_search').handler({ mood: 'happy' }, {}));
+  check('search 按情绪过滤', filtered.includes('项目上线了') && !filtered.includes('面试没过'), filtered);
+
+  const stats = String(await byName('ink_stats').handler({}, {}));
+  check('stats 有情绪分布', stats.includes('情绪：') && stats.includes('开心 1') && stats.includes('低落 1'), stats);
+
+  const amended = String(await byName('ink_amend').handler({ id: picked.match(/mem_[a-z0-9]+/)?.[0] ?? '', mood: 'warm' }, {}));
+  check('amend 能改情绪', amended.includes('温柔'), amended);
+
+  const snapshot = await world.webUi('zh').invoke('library', 'snapshot', []);
+  const moods = snapshot?.data?.moods ?? [];
+  check('面板有情绪分布', moods.some((item) => item.mood === 'warm' && item.count === 1), JSON.stringify(moods));
+  check('面板条目带情绪标签', (snapshot?.data?.recent ?? []).every((item) => typeof item.moodLabel === 'string'));
   await world.stop();
 }
 

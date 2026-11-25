@@ -12,15 +12,19 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  DEFAULT_MOOD,
   KIND_LABELS,
   MAX_TTL_DAYS,
   MEMORY_SCHEMA,
   isExpired,
   isMemoryKind,
+  isMemoryMood,
   type MemoryCounts,
   type MemoryDatabaseFile,
   type MemoryEntry,
   type MemoryKind,
+  type MemoryMood,
+  type MoodCount,
   type TagCount,
 } from './types.ts';
 import { clampInt, collapse, newId, nowIso, truncate } from './util.ts';
@@ -54,6 +58,7 @@ export interface MemoryStoreOptions {
 export interface AddMemoryInput {
   text: string;
   kind?: MemoryKind;
+  mood?: MemoryMood;
   tags?: string[];
   source?: string;
   importance?: number;
@@ -73,6 +78,7 @@ export interface AddMemoryResult {
 export interface UpdateMemoryInput {
   text?: string;
   kind?: MemoryKind;
+  mood?: MemoryMood;
   tags?: string[];
   source?: string;
   importance?: number;
@@ -193,6 +199,15 @@ export class MemoryStore {
     return this.live().filter((entry) => isExpired(entry, now)).length;
   }
 
+  /** 未归档条目按情绪清点，多的在前。 */
+  byMood(): MoodCount[] {
+    const tally = new Map<MemoryMood, number>();
+    for (const entry of this.live()) tally.set(entry.mood, (tally.get(entry.mood) ?? 0) + 1);
+    return [...tally.entries()]
+      .map(([mood, count]) => ({ mood, count }))
+      .sort((a, b) => b.count - a.count || a.mood.localeCompare(b.mood));
+  }
+
   add(input: AddMemoryInput): AddMemoryResult {
     this.ensureLoaded();
     const text = this.cleanText(input.text, true);
@@ -205,6 +220,7 @@ export class MemoryStore {
       id: newId(),
       text,
       kind,
+      mood: isMemoryMood(input.mood) ? input.mood : DEFAULT_MOOD,
       tags: this.cleanTags(input.tags),
       source: this.cleanSource(input.source),
       importance: clampInt(input.importance, 0, 5, clampInt(input.defaultImportance, 0, 5, 2)),
@@ -232,6 +248,7 @@ export class MemoryStore {
       if (!isMemoryKind(patch.kind)) throw new Error(`未知的种类「${String(patch.kind)}」；可用：${MEMORY_KINDS_TEXT()}。`);
       found.kind = patch.kind;
     }
+    if (patch.mood !== undefined) found.mood = isMemoryMood(patch.mood) ? patch.mood : DEFAULT_MOOD;
     if (patch.tags !== undefined) found.tags = this.cleanTags(patch.tags);
     if (patch.source !== undefined) found.source = this.cleanSource(patch.source);
     if (patch.importance !== undefined) found.importance = clampInt(patch.importance, 0, 5, found.importance);
@@ -400,6 +417,7 @@ export class MemoryStore {
       id,
       text,
       kind: isMemoryKind(item.kind) ? item.kind : 'note',
+      mood: isMemoryMood(item.mood) ? item.mood : DEFAULT_MOOD,
       tags: Array.isArray(item.tags)
         ? item.tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0).map((tag) => collapse(tag))
         : [],

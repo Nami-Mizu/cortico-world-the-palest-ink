@@ -1,3 +1,11 @@
+## 0.7.0
+
+- **情绪记忆**：条目新增 `mood` 字段（`warm` 温柔 / `happy` 开心 / `low` 低落 / `serious` 认真 / `playful` 玩笑 / `clingy` 黏人 / `neutral` 平静，默认 `neutral`）。`ink_remember` / `ink_amend` 可选填 `mood`，`ink_search` 可按情绪过滤；旧存档缺这个字段的按 `neutral` 读。
+- **新工具 `ink_mood`**（只读）：回复前按这一句/上一句的情绪取 5 条最相关的记忆（同情绪、未归档，按重要度、取用次数、最近更新排），回执直接作为这次回复的素材。
+- 情绪由**模型自己标**：宿主不提供情绪标签，模型判断语气后写入，回复前再按判断调 `ink_mood`；环境提示词加了「关于情绪」一节与「别整段复述回执」的口径。
+- 面板：记忆库表格与抽屉显示情绪，统计行与 `snapshot` 带情绪分布（`moods`）；`ink_stats` 多一行「情绪：…」。
+- 测试：122 个用例（world 34 / search 16）；`_dev/verify.mjs` 121 项。
+
 ## 0.6.1
 
 - **导入后主动补向量**：只要语义开着且配好了，`data:import` 完成后立即启动一次**全量**补向量（`backfill(MAX_SAFE_INTEGER)`），不再看 `embedAutoReindex`（那个开关只管「启动时补」），也不受启动时 200 条的上限。

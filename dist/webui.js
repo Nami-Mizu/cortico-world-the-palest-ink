@@ -363,7 +363,7 @@ var panel2 = {
     const msg = ui.msgline();
     sheet.body.append(msg);
     const table = ui.table({
-      head: ["\u7F16\u53F7", "\u6458\u8981", "\u79CD\u7C7B", "\u91CD\u8981\u5EA6", "\u6700\u8FD1\u4FEE\u8BA2", ""],
+      head: ["\u7F16\u53F7", "\u6458\u8981", "\u79CD\u7C7B", "\u60C5\u7EEA", "\u91CD\u8981\u5EA6", "\u6700\u8FD1\u4FEE\u8BA2", ""],
       maxHeight: "calc(100vh - 360px)"
     });
     sheet.body.append(table.el);
@@ -384,6 +384,7 @@ var panel2 = {
         const meta = ui.kv([
           { k: "\u7F16\u53F7", v: entry.entry.id },
           { k: "\u79CD\u7C7B", v: entry.entry.kindLabel },
+          { k: "\u60C5\u7EEA", v: entry.entry.moodLabel },
           { k: "\u91CD\u8981\u5EA6", v: entry.entry.importance },
           { k: "\u6807\u7B7E", v: entry.entry.tags.length ? `#${entry.entry.tags.join(" #")}` : "\uFF08\u65E0\uFF09" },
           { k: "\u6765\u6E90", v: entry.source || "\uFF08\u672A\u5199\uFF09" },
@@ -420,6 +421,7 @@ var panel2 = {
           hit.id.slice(0, 14),
           hit.text || hit.tags.map((item) => `#${item}`).join(" "),
           hit.kindLabel,
+          hit.moodLabel,
           String(hit.importance),
           when(hit.updatedAt),
           ui.button("\u67E5\u770B", { size: "sm", onClick: () => void openEntry(hit.id) })
@@ -468,8 +470,9 @@ var panel2 = {
       embedLine.textContent = snapshot.embed.enabled ? `\u8BED\u4E49\u68C0\u7D22\uFF1A${snapshot.embed.state === "ready" ? "\u5C31\u7EEA" : snapshot.embed.state === "partial" ? `\u90E8\u5206\u5C31\u7EEA\uFF08${snapshot.embed.indexed}/${snapshot.embed.live} \u6761\u6709\u5411\u91CF\uFF09` : snapshot.embed.state === "error" ? `\u51FA\u9519\uFF08${snapshot.embed.lastError ?? "\u672A\u77E5"}\uFF09` : "\u5F00\u4E86\u4F46\u6CA1\u914D\u597D"} \xB7 ${snapshot.embed.model}` : "\u8BED\u4E49\u68C0\u7D22\uFF1A\u5173\uFF08\u53EA\u7528\u5B57\u9762\u5339\u914D\uFF09\u3002\u5230\u300C\u5D4C\u5165\u300D\u9875\u7B7E\u53EF\u4EE5\u63A5\u4E0A\u672C\u5730\u6216\u4E91\u7AEF\u7684\u5D4C\u5165\u6A21\u578B\u3002";
       embedLine.classList.toggle("bad", snapshot.embed.state === "error");
       const kinds = snapshot.kinds.map((item) => `${item.label} ${item.count}`).join(" \xB7 ");
+      const moods = snapshot.moods.length ? snapshot.moods.map((item) => `${item.label} ${item.count}`).join(" \xB7 ") : "\uFF08\u8FD8\u6CA1\u6807\u8FC7\uFF09";
       const tags = snapshot.tags.length ? snapshot.tags.map((item) => `${item.tag}(${item.count})`).join("\u3001") : "\uFF08\u8FD8\u6CA1\u6709\u6807\u7B7E\uFF09";
-      note.textContent = `\u79CD\u7C7B\uFF1A${kinds}\uFF5C\u6807\u7B7E\uFF1A${tags}\uFF5C\u8FC7\u671F\u5F85\u6574\u7406 ${snapshot.expired.count} \u6761\uFF5C\u5B58\u6863\uFF1A${snapshot.storeFile}`;
+      note.textContent = `\u79CD\u7C7B\uFF1A${kinds}\uFF5C\u60C5\u7EEA\uFF1A${moods}\uFF5C\u6807\u7B7E\uFF1A${tags}\uFF5C\u8FC7\u671F\u5F85\u6574\u7406 ${snapshot.expired.count} \u6761\uFF5C\u5B58\u6863\uFF1A${snapshot.storeFile}`;
       renderRows(snapshot.recent);
       if (snapshot.recent.length) {
         msg.textContent = `\u6700\u8FD1\u4FEE\u8BA2\u7684 ${snapshot.recent.length} \u6761\u3002`;
