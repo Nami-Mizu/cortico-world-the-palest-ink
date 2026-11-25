@@ -53,7 +53,7 @@
 - 事件有两个档位（配置 `eventLevel`，默认 `quiet`）：`quiet` 只发系统事件——`loaded`、`store.recovered`、`reminder.*`、`embed.*`、`evicted`、`maintenance.swept`；`normal` 才把 `added` / `amended` / `recalled` / `purged` / `archived` 这些「自己动作的回声」也发出来。`emitTool()` 是回声的统一出口，别在工具里直接 `emit()`。
 - `runMaintenance()` **一轮只发一条** `ink.maintenance.swept`（归档数、久未取用/内容重复各几条、最多 5 个样本 id），不再逐条发 `archived`。时间线是给模型读的，不是审计日志。
 - `describe.json` 仍声明全部 15 个事件——声明是「可能发」，文档才是「默认发什么」，别为了静音去删声明。
-- 查重在 `src/dedupe.ts`（纯函数）：`fingerprint()` 来自 `src/maintenance.ts`（拉丁词 + 中日韩相邻两字），两把尺子——Jaccard ≥ `dedupeThreshold`（默认 0.82）、小集合被大集合包含 ≥ `DEDUPE_CONTAINMENT = 0.92`、或 simhash 汉明 ≤ `DEDUPE_HAMMING = 4`；特征少于 `MIN_FEATURES = 3` 不判（短句撞车太多）。
+- 查重在 `src/dedupe.ts`（纯函数）：`fingerprint()` 来自 `src/maintenance.ts`（拉丁词 + 中日韩相邻两字），三把尺子——Jaccard ≥ `dedupeThreshold`（默认 0.82）、小集合被大集合包含 ≥ `DEDUPE_CONTAINMENT = 0.92`、或 simhash 汉明 ≤ `DEDUPE_HAMMING = 4`；特征少于 `MIN_FEATURES = 3` 不判（短句撞车太多）。
 - 查重只比**同 kind、未归档、未置顶**的条目，`excludeId` 用来跳过自己。`dedupeMode`：`warn`（默认，拦下并回旧 id + 相似度）、`merge`（把新正文追加进旧条目，超 `MAX_TEXT_LENGTH` 回失败）、`off`。`ink_remember` 的 `force: true` 只在 warn 档有意义。
 - 判重的口径是「别写第二份」，不是「判断事实冲突」：换了关键信息的改写（周三→周五）会被当成新条目。别顺手把它扩成语义冲突判定——那是 0.4.0 明确不做的事。
 
