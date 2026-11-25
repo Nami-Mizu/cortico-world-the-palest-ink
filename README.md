@@ -119,7 +119,7 @@ node _dev/verify.mjs           # 无依赖行为自检（69 项，不需要 pnpm
 node _dev/gen-describe.mjs     # 重新生成 describe.json
 ```
 
-本机 `pnpm` 会静默挂住，验证时用 npm 替身：
+`packageManager` 锁的版本要跟本机 `pnpm --version` 一致（当前 `pnpm@12.23.0`）。对不上时 pnpm 不是报错，而是**静默挂住**——它跑去下载字段里那个版本，下不到就一直等。真遇到时改用 npm 替身：
 
 ```bash
 npm install --ignore-scripts --no-audit --no-fund

@@ -30,7 +30,8 @@
 - 类型检查：`tsc --noEmit`（主项目）与 `tsc -p tsconfig.webui.json --noEmit`（面板）**都通过，0 错误**。
 - 单元测试：`vitest run` → **43/43 通过**（`tests/world.test.ts` 13、`tests/search.test.ts` 13、`tests/embedding.test.ts` 11、`tests/vector.test.ts` 6）。
 - 面板构建：`dist/webui.js` **26649 B**，esbuild 无警告。
-- **注意 `pnpm` 在这台机器上会静默挂住**（装好了 12.23.0，但 `pnpm install` / `pnpm typecheck` 都无输出卡死，原因未查）。当前可用的替身：`npm install --ignore-scripts` 装依赖，然后 `node node_modules/typescript/bin/tsc --noEmit`、`node node_modules/vitest/vitest.mjs run`。
+- **`pnpm` 曾经静默挂住，已修**：`package.json` 里锁的 `packageManager: pnpm@11.28.6` 与本机 12.23.0 不一致，pnpm 10+ 会按字段去取旧版，取不到就无声卡死（`pnpm --version` 正常，因为它不读项目）。改成 `pnpm@12.23.0` 后 `pnpm install` / `pnpm typecheck` / `pnpm test` / `pnpm build:webui` 全部正常，`pnpm-lock.yaml` 已入库。**改这个字段前先看 `pnpm --version`。**
+- **不要用 PowerShell 文本管道写文件**：会话里有个防双重编码的插件，`Get-Content x | Set-Content x`、`Out-File`、`cat x > y`、`Tee-Object` 会被直接拒绝执行（看起来像「用户拒绝了命令」），就算跑通也可能把中文按 ANSI 写坏。读用 `read`、写用 `write`/`edit`；脚本里必须读写文件时用 `[IO.File]::ReadAllText` / `[IO.File]::WriteAllText` 配 `[Text.UTF8Encoding]::new($false)`。
 - `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：7 个工具、5 个占位符、2 个面板、1 个配置组全部通过，`describe.json` 与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。
 - `defaults().enabled` 恒为 `false`：宿主 `dryMount` 会拿这条当警告，装不装、开不开由 bot 声明与部署决定。
 - 第三级（装进实例目击行为）：未做，待开发者。要看的现象：World 页多两个页签、`ink_search` 回执、嵌入页「测试连接」出维度与耗时。
