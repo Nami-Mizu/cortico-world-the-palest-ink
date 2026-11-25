@@ -4,6 +4,18 @@
   "type": "module",
   "description": "淡墨 · 记忆库：给 Agent 一个可以写下、检索、修订与归档的长期记忆数据库；可选语义检索，带时效性记忆、情绪标签与按情绪取回、定时与上下文提醒、自动归档、写入前查重、事件静音、JSON 导入导出，以及一张 2D 记忆星图。",
   "license": "MIT",
+  "author": "Nami-Mizu",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nami-Mizu/cortico-world-the-palest-ink.git"
+  },
+  "homepage": "https://github.com/Nami-Mizu/cortico-world-the-palest-ink#readme",
+  "bugs": {
+    "url": "https://github.com/Nami-Mizu/cortico-world-the-palest-ink/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "cortico-world",
     "cortico",
