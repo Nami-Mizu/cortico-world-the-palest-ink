@@ -19,6 +19,7 @@ import { planMaintenance } from '../src/maintenance.ts';
 import { searchEntries } from '../src/search.ts';
 import { MemoryStore } from '../src/store.ts';
 import { VectorStore } from '../src/vector.ts';
+import { layoutStarMap } from '../src/webui/starmap-layout.ts';
 import { ThePalestInkWorld } from '../src/world.ts';
 
 const failures = [];
@@ -378,6 +379,19 @@ function tempDir() {
   check('记忆库快照', snapshot.ok === true && snapshot.data.counts.total === 1, JSON.stringify(snapshot.data?.counts));
   const panelHits = await invoke('library', 'search', [{ query: '量子力学' }]);
   check('面板检索复用语义', panelHits.ok === true && panelHits.data.hits[0]?.id === id, JSON.stringify(panelHits.data?.hits?.length));
+
+  const starMap = await invoke('starmap', 'map', []);
+  check('星图给点', starMap.ok === true && starMap.data.points.length === 1, JSON.stringify(starMap.data?.counts));
+  check('星图点带标签字段', Array.isArray(starMap.data.points[0]?.tags), JSON.stringify(starMap.data.points[0]?.tags));
+  const starLayout = layoutStarMap(starMap.data.points, starMap.data.tags, 640, 420);
+  const starLayoutAgain = layoutStarMap(starMap.data.points, starMap.data.tags, 640, 420);
+  check('星图布局可复现', JSON.stringify(starLayoutAgain) === JSON.stringify(starLayout));
+  check(
+    '星图点在画布内',
+    starLayout.nodes.every((node) => Number.isFinite(node.x) && Number.isFinite(node.y) && node.x >= 24 && node.y >= 24 && node.x <= 616 && node.y <= 396),
+    JSON.stringify(starLayout.nodes),
+  );
+  check('星图按种类过滤', (await invoke('starmap', 'map', [{ kind: 'todo' }])).data.points.length === 0);
 
   await world.stop();
   check('面板调用没推警告', !events.some((event) => event.type === 'warn'), events.filter((event) => event.type === 'warn').map((event) => event.text).join(' | '));

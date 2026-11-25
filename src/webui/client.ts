@@ -2,9 +2,10 @@
 import type { WebUiClientBundle } from 'cortico/web/shared/client-panel.ts';
 import embedding from './panels/embedding.ts';
 import library from './panels/library.ts';
+import starmap from './panels/starmap.ts';
 
 const bundle: WebUiClientBundle = {
-  panels: { library, embedding },
+  panels: { library, starmap, embedding },
 };
 
 export default bundle;

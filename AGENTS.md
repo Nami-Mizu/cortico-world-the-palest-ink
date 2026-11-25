@@ -3,7 +3,7 @@
 - `cortico.api` 是 6（world 契约版本）。宿主升契约时先跑 `pnpm check:extension <本包目录>` 看它打印的版本。
 - 改了工具、事件或 `src/ENV_PROMPT.md`，要重跑 `pnpm describe:extension <本包目录>`，否则 `describe.json` 与代码不一致（check 会报）。本机没有 pnpm 时用 `node _dev/gen-describe.mjs` 重生成。
 - World id 固定 `thepalestink`（全小写、无连字符：WebUI 页 id 是 `world:thepalestink`，协议只接受小写字母数字与 `-`；事件 type 段内也不许连字符）。工具前缀固定 `ink_`，配置路径因此是 `worlds.thepalestink.*`。
-- 八个工具：`ink_remember` / `ink_search` / `ink_recall` / `ink_amend` / `ink_forget` / `ink_expired` / `ink_list` / `ink_stats`。面板两个页签：`library`（记忆库，只读）与 `embedding`（嵌入配置）。
+- 八个工具：`ink_remember` / `ink_search` / `ink_recall` / `ink_amend` / `ink_forget` / `ink_expired` / `ink_list` / `ink_stats`。面板三个页签：`library`（记忆库，只读）、`starmap`（星图，只读）、`embedding`（嵌入配置）。
 - 数据两份：`<dataDir>/thepalestink/entries.json`（`MEMORY_SCHEMA = 1`，删它等于清空记忆库）与 `<dataDir>/thepalestink/vectors.json`（`VECTOR_SCHEMA = 1`，删它只丢向量、不丢正文）。schema 升级要写迁移，不要静默丢弃旧字段。
 - 写盘都是 `.tmp` + rename；坏档改名成 `*.broken-<时间戳>` 后空库继续，`store.recovery()` / `vectors.recovery()` 记着备份路径。
 - 容量策略在 `MemoryStore.add()` → `enforceLimit()`：只数**未归档**条目，超限按 `lastRecalledAt ?? updatedAt` 最旧优先淘汰到归档（`archived: true` + `archiveReason`），`pinned` 不淘汰。`_dev/verify.mjs` 里有置顶保护与热改上限的用例，改策略先跑它。
@@ -19,7 +19,7 @@
 - `ink_forget` 默认只归档；`purge: true` 必须 `worlds.thepalestink.hardDeleteOnForget === true` 才接受，否则回失败回执（`{ failed: true }`）。这是有意的双闸，别为了顺手拆掉。
 - 配置全部 `x-hot`：`syncConfig()` 在每次工具调用前跑，`maxEntries` 改小会**立刻**淘汰并推 `ink.memory.evicted`。
 - 环境提示词在 `src/ENV_PROMPT.md`，占位符 `{{thepalestink.count}}` / `{{thepalestink.archived}}` / `{{thepalestink.maxEntries}}` / `{{thepalestink.topTags}}` / `{{thepalestink.semantic}}` / `{{thepalestink.expired}}` 由 `envPromptVars()` 提供。改占位符名要两边一起改。
-- 面板：服务端在 `src/world.ts` 的 `invoke()`（`library` / `embedding` 各一个 switch），客户端在 `src/webui/panels/*.ts`，打包入口 `src/webui/client.ts` → `dist/webui.js`（manifest 的 `cortico.webUiClient`）。客户端只能 `import type`，不能 import 服务端模块；面板返回统一 `{ok,data}|{ok:false,error}`，别抛异常穿透。
+- 面板：服务端在 `src/world.ts` 的 `invoke()`（`library` / `starmap` / `embedding` 各一个分支），客户端在 `src/webui/panels/*.ts`，打包入口 `src/webui/client.ts` → `dist/webui.js`（manifest 的 `cortico.webUiClient`）。客户端只能 `import type`，不能 import 服务端模块；面板返回统一 `{ok,data}|{ok:false,error}`，别抛异常穿透。
 - 面板加方法要改两处：`invoke()` 的 switch 与 `panels` 声明里的 `getMethods`（省略 `getMethods` 就只接受 POST）。
 - 改完面板必须 `pnpm build:webui`（或 `node node_modules/esbuild/bin/esbuild src/webui/client.ts --bundle --format=esm --target=es2022 --platform=browser --outfile=dist/webui.js`），否则页面加载的是旧 bundle。
 - 文案口径：模型对**人类**称「对方」，模型自己称「你」；回执不是正文，不要整段贴回。
@@ -47,17 +47,28 @@
 - 明确不做：不做逐条「已通知」去重（cron 就是整理时间，每次都报未处理数量）、不自动归档过期条目、不判断事实是否还成立。要改事实就 `ink_amend` 正文。
 - 改这块先跑 `node _dev/verify.mjs`（有时效用例），再跑 `tests/world.test.ts` 里「过期条目」「不填 expiresInDays 永不过期」两例；测试要模拟时间流逝，得改 `reminderWorld` 那个 `now` 返回的 Date 对象本身（`clock.setTime(...)`），只把 `tick(now)` 传成未来时间不够。
 
+## 记忆星图
+
+- 页签 `starmap`，只读。服务端 `starMap()` 在 `src/world.ts`，布局是纯函数 `layoutStarMap()` 在 `src/webui/starmap-layout.ts`（无 DOM、无宿主 import，`tests/starmap-layout.test.ts` 与 `_dev/verify.mjs` 都直接 import 它）。
+- **不画线**：位置 = `hash32(id)` 当种子 + 固定 48 轮排斥松弛，同一份数据每次算出来完全一样；数据变了才动。别加「每次随机抖动」或「按时间漂移」，否则刷新就跳。
+- 标签圈最多 `MAX_ANCHORS = 8` 个（按出现次数取前 8）；标签多于 8 个时其余标签的点照画、只是没有圈。无标签的点落内圈。
+- 点的视觉编码：颜色 = `kind`、半径 = `nodeRadius()`（重要度 + 置顶加成）、实心外环 = 置顶、虚线外环 = 已过期、灰 = 归档。
+- 上限 `MAX_LAYOUT_POINTS = 800`，同时不超过 `worlds.thepalestink.maxEntries`；`truncated` 为真时面板显示「只画了前 N 条」。
+- 面板用 canvas（不是 SVG）：500+ 点每帧重绘时 SVG 节点会卡；缩放 0.6–3 倍、拖拽平移、点中后 `invoke('entry')` 复用 `library` 的详情卡。
+- 服务端只返回点、标签圈与计数，**不返回坐标**——布局在客户端算，服务端不缓存。改 `panel-types.ts` 的 `StarPoint` 要同步改两端。
+- 面板客户端只能 `import type`；`ui.pill` 的 tone 只有 `'on' | 'off' | 'plain'`。
+
 ## 验证到哪一级
 
-- 行为自检：`node _dev/verify.mjs` → **94 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、八个工具、时效与过期、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance 后先跑它。
+- 行为自检：`node _dev/verify.mjs` → **99 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、八个工具、时效与过期、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档、星图布局）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance/starmap-layout 后先跑它。
 - 类型检查：`tsc --noEmit`（主项目）与 `tsc -p tsconfig.webui.json --noEmit`（面板）**都通过，0 错误**。
-- 单元测试：`vitest run` → **79/79 通过**（`tests/world.test.ts` 22、`tests/search.test.ts` 13、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
-- 面板构建：`dist/webui.js` **29.4kb**，esbuild 无警告。
+- 单元测试：`vitest run` → **90/90 通过**（`tests/world.test.ts` 23、`tests/starmap-layout.test.ts` 10、`tests/search.test.ts` 13、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
+- 面板构建：`dist/webui.js` **50.5kb**，esbuild 无警告。
 - **`pnpm` 曾经静默挂住，已修**：`package.json` 里锁的 `packageManager: pnpm@11.28.6` 与本机 12.23.0 不一致，pnpm 10+ 会按字段去取旧版，取不到就无声卡死（`pnpm --version` 正常，因为它不读项目）。改成 `pnpm@12.23.0` 后 `pnpm install` / `pnpm typecheck` / `pnpm test` / `pnpm build:webui` 全部正常，`pnpm-lock.yaml` 已入库。**改这个字段前先看 `pnpm --version`。**
 - **不要用 PowerShell 文本管道写文件**：会话里有个防双重编码的插件，`Get-Content x | Set-Content x`、`Out-File`、`cat x > y`、`Tee-Object` 会被直接拒绝执行（看起来像「用户拒绝了命令」），就算跑通也可能把中文按 ANSI 写坏。读用 `read`、写用 `write`/`edit`；脚本里必须读写文件时用 `[IO.File]::ReadAllText` / `[IO.File]::WriteAllText` 配 `[Text.UTF8Encoding]::new($false)`。
-- `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：8 个工具、6 个占位符、2 个面板、2 个配置组全部通过，`describe.json` 与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。
+- `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：8 个工具、6 个占位符、3 个面板、2 个配置组全部通过，`describe.json` 与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。
 - `defaults().enabled` 恒为 `false`：宿主 `dryMount` 会拿这条当警告，装不装、开不开由 bot 声明与部署决定。
-- 第三级（装进实例目击行为）：未做，待开发者。要看的现象：World 页多两个页签、`ink_search` 回执、嵌入页「测试连接」出维度与耗时。
+- 第三级（装进实例目击行为）：未做，待开发者。要看的现象：World 页多三个页签（记忆库 / 星图 / 嵌入）、`ink_search` 回执、嵌入页「测试连接」出维度与耗时、星图里点和圈画得出来。
 
 ## 提交前
 

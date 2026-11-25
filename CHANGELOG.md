@@ -1,3 +1,13 @@
+## 0.5.0
+
+- **记忆星图**：第三个页签 `starmap`（只读）。每条记忆一个点，标签画成引力圈，**不画线**。
+  - 布局是纯函数 `layoutStarMap()`：`hash32(id)` 当种子 + 固定 48 轮排斥松弛，同一份数据每次结果一致（刷新不漂移）。
+  - 最多 8 个标签圈（按出现次数）；无标签的点落内圈；点的颜色 = 种类、大小 = 重要度、实心环 = 置顶、虚线圈 = 已过期、灰 = 归档。
+  - 上限 800 点（同时不超过 `maxEntries`）；超出时显示「只画了前 N 条」。
+  - 客户端用 canvas，支持滚轮缩放（0.6–3）、拖拽平移、悬停提示、点开复用记忆库详情卡。
+- 服务端新增面板方法 `starmap:map` 与 `starmap:entry`；新增 `src/webui/starmap-layout.ts`（无 DOM、测试与面板共用）。
+- 测试：90 个用例（world 23 / starmap-layout 10 / search 13 / cron 12 / embedding 11 / maintenance 15 / vector 6）；`_dev/verify.mjs` 99 项。
+
 ## 0.4.0
 
 - **时效性记忆**：`ink_remember` / `ink_amend` 增加可选 `expiresInDays`（0 = 永久，上限 3650）；条目记 `ttlDays` 与 `expiresAt`，按 `ctx.timezone` 算到期日。

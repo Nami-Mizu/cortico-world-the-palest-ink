@@ -21,6 +21,7 @@ import { MemoryStore } from './store.ts';
 import { KIND_LABELS, MAX_TTL_DAYS, MEMORY_KINDS, isExpired, overdueDays, type MemoryEntry, type MemoryKind } from './types.ts';
 import { clampInt, collapse, estimateTokens, nowIso, truncate } from './util.ts';
 import { VectorStore, describeEmbedTarget } from './vector.ts';
+import { MAX_LAYOUT_POINTS } from './webui/starmap-layout.ts';
 
 /** World id：全小写、无连字符，配置路径因此是 `worlds.thepalestink.*`。 */
 export const INK_WORLD_ID = 'thepalestink';
@@ -35,6 +36,8 @@ const PREVIEW_CHARS = 48;
 const EVENT_PREVIEW_CHARS = 24;
 /** 面板里一条正文的预览长度。 */
 const PANEL_PREVIEW_CHARS = 160;
+/** 星图上一条记忆的预览长度（悬停提示用，越短越不挤）。 */
+const STAR_PREVIEW_CHARS = 60;
 /** 自动补向量一次最多补多少条（防止启动时把额度烧光）。 */
 const AUTO_BACKFILL_LIMIT = 200;
 
@@ -347,6 +350,11 @@ export class ThePalestInkWorld implements World {
           id: 'library',
           title: '记忆库',
           description: '列表、检索与条目全文（只读；写入由模型通过工具完成）。',
+        },
+        {
+          id: 'starmap',
+          title: '星图',
+          description: '每条记忆一个点，圆圈是标签的引力范围；点的大小是重要度（只读）。',
         },
         {
           id: 'embedding',
@@ -1004,6 +1012,16 @@ export class ThePalestInkWorld implements World {
             default:
               return this.fail(`未知方法「${method}」。`);
           }
+        case 'starmap':
+          switch (method) {
+            case 'map':
+              this.syncConfig();
+              return this.ok(this.starMap(arg(0)));
+            case 'entry':
+              return this.ok(this.libraryEntry(arg(0)));
+            default:
+              return this.fail(`未知方法「${method}」。`);
+          }
         case 'embedding':
           switch (method) {
             case 'status':
@@ -1062,6 +1080,57 @@ export class ThePalestInkWorld implements World {
       storeFile: this.store.file,
       vectorFile: this.vectors.file,
       recovery: this.store.recovery(),
+    };
+  }
+
+  /**
+   * 星图数据：只给画图需要的字段，正文截到 60 字。
+   * 排序固定（按修订时间倒序、id 升序），布局的抖动才可复现。
+   */
+  private starMap(args: Record<string, unknown>): unknown {
+    const kind = this.readKind(args.kind);
+    const tag = typeof args.tag === 'string' ? collapse(args.tag).toLowerCase() : '';
+    const includeArchived = args.includeArchived === true;
+    const matched = this.store.all().filter((entry) => {
+      if (!includeArchived && entry.archived) return false;
+      if (kind && entry.kind !== kind) return false;
+      if (tag && !entry.tags.includes(tag)) return false;
+      return true;
+    });
+    const limit = includeArchived
+      ? MAX_LAYOUT_POINTS
+      : Math.min(MAX_LAYOUT_POINTS, Math.max(1, this.store.limit()));
+    const shown = matched
+      .slice()
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id))
+      .slice(0, limit);
+    const now = this.now();
+
+    const counter = new Map<string, number>();
+    for (const entry of shown) {
+      for (const name of entry.tags) counter.set(name, (counter.get(name) ?? 0) + 1);
+    }
+    const tags = [...counter.entries()]
+      .map(([name, count]) => ({ tag: name, count }))
+      .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag))
+      .slice(0, 24);
+
+    return {
+      points: shown.map((entry) => ({
+        id: entry.id,
+        text: truncate(entry.text, STAR_PREVIEW_CHARS),
+        kind: entry.kind,
+        tags: entry.tags,
+        importance: entry.importance,
+        pinned: entry.pinned,
+        archived: entry.archived,
+        expired: isExpired(entry, now),
+        recallCount: entry.recallCount,
+        updatedAt: entry.updatedAt,
+      })),
+      tags,
+      counts: { shown: shown.length, matched: matched.length, ...this.store.counts() },
+      truncated: matched.length > shown.length,
     };
   }
 

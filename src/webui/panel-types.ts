@@ -143,6 +143,28 @@ export interface LibrarySnapshot {
   recovery: string | null;
 }
 
+/** 星图上的一个点：只带画图需要的字段，不带全文。 */
+export interface StarPoint {
+  id: string;
+  text: string;
+  kind: string;
+  tags: string[];
+  importance: number;
+  pinned: boolean;
+  archived: boolean;
+  expired: boolean;
+  recallCount: number;
+  updatedAt: string;
+}
+
+export interface StarMapResponse {
+  points: StarPoint[];
+  /** 当前这批点里的标签计数（最多 24 个）；布局用它的前 8 个做圈。 */
+  tags: TagCount[];
+  counts: { shown: number; matched: number; live: number; archived: number; total: number };
+  truncated: boolean;
+}
+
 export interface SearchHit extends PanelEntry {
   score: number;
   semantic?: boolean;

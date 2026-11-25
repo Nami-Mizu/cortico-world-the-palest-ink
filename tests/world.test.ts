@@ -563,6 +563,45 @@ describe('淡墨 · 面板', () => {
     await world.stop();
   });
 
+  it('星图面板：只给点与标签圈，按种类过滤，归档默认不画', async () => {
+    const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
+    const world = THE_PALEST_INK.create(ctx);
+    await world.start(new FakeHost());
+    const workId = idFrom(
+      textOf(await tool(world, 'ink_remember').handler({ text: '周三要交预算表。', kind: 'todo', tags: ['工作'] }, CALL)),
+    );
+    const lifeId = idFrom(
+      textOf(await tool(world, 'ink_remember').handler({ text: '对方喜欢桂花。', kind: 'preference', tags: ['生活'] }, CALL)),
+    );
+    await tool(world, 'ink_forget').handler({ id: lifeId }, CALL);
+
+    const map = await panel(world, 'starmap', 'map');
+    expect(map.ok).toBe(true);
+    const data = map.data as {
+      points: Array<{ id: string; tags: string[]; text: string }>;
+      tags: Array<{ tag: string; count: number }>;
+      counts: { shown: number; matched: number };
+      truncated: boolean;
+    };
+    expect(data.points.map((entry) => entry.id)).toEqual([workId]);
+    expect(data.tags).toEqual([{ tag: '工作', count: 1 }]);
+    expect(data.counts.shown).toBe(1);
+    expect(data.truncated).toBe(false);
+
+    const withArchived = await panel(world, 'starmap', 'map', { includeArchived: true });
+    expect((withArchived.data as { points: unknown[] }).points.length).toBe(2);
+
+    const onlyTodo = await panel(world, 'starmap', 'map', { kind: 'todo' });
+    expect((onlyTodo.data as { points: Array<{ id: string }> }).points.map((entry) => entry.id)).toEqual([workId]);
+
+    const byTag = await panel(world, 'starmap', 'map', { tag: '工作' });
+    expect((byTag.data as { points: Array<{ id: string }> }).points.map((entry) => entry.id)).toEqual([workId]);
+
+    const entryResult = await panel(world, 'starmap', 'entry', { id: workId });
+    expect((entryResult.data as { text: string }).text).toContain('预算表');
+    await world.stop();
+  });
+
   it('保存嵌入配置会校验范围，并写回宿主配置', async () => {
     const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
     const persisted: Array<Record<string, unknown>> = [];
