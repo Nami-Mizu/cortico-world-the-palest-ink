@@ -1,0 +1,386 @@
+{
+  "tools": [
+    {
+      "name": "ink_remember",
+      "description": "把一条值得长期记住的事写进记忆库，返回条目 id。正文用一句到几句话写清「谁、什么时候、发生了什么、为什么重要」；不要写寒暄、不要写自己刚读过的原文。标签选稳定的名词（人名、项目、主题），重要度 0–5：0 = 随手记，3 = 以后会反复用到，5 = 长期设定。同一件事已经记过时用 ink_amend 改，不要重复写。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "记忆正文，1–2000 字。"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "fact",
+              "event",
+              "preference",
+              "todo",
+              "note"
+            ],
+            "description": "种类：fact 事实 / event 事件 / preference 偏好 / todo 待办 / note 杂记。缺省 note。"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "标签，用来分组与过滤：最多 12 个，每个 24 字以内，不用带 #。"
+          },
+          "source": {
+            "type": "string",
+            "description": "来源：哪次对话、哪份文件、谁说的。80 字以内。"
+          },
+          "importance": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "description": "重要度 0–5，缺省读配置 defaultImportance（默认 2）。"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "置顶。置顶的条目不会被容量上限淘汰，适合长期设定。"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "write"
+      ],
+      "summary": {
+        "zh": "把一件事写进记忆库，返回条目 id。",
+        "en": "Write one memory into the database and return its id."
+      }
+    },
+    {
+      "name": "ink_search",
+      "description": "按关键词检索记忆库，返回带 id 的摘要行。多个词之间是「都要命中」（AND）；中文按子串与相邻两字匹配，英文不分大小写。开了语义检索时，意思相近但字面不同的条目也会被找出来。可用 tags（这些标签都要有）、kind、includeArchived 收窄范围。命中很少时先换同义词或删掉标签，再看 ink_list。只给 tags/kind、不给 query 时按最近更新返回。结果只给摘要，要全文用 ink_recall。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "检索词，空格分隔多个词；空串表示只按 tags/kind 过滤。"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "标签，用来分组与过滤：最多 12 个，每个 24 字以内，不用带 #。"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "fact",
+              "event",
+              "preference",
+              "todo",
+              "note"
+            ],
+            "description": "种类：fact 事实 / event 事件 / preference 偏好 / todo 待办 / note 杂记。缺省 note。"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "返回几条，缺省读配置 searchLimit（默认 8）。"
+          },
+          "includeArchived": {
+            "type": "boolean",
+            "description": "连归档一起找，缺省 false。"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "tags": [
+        "read"
+      ],
+      "summary": {
+        "zh": "按关键词与标签检索记忆，返回带 id 的摘要行。",
+        "en": "Search memories by keywords and tags; returns summary lines with ids."
+      }
+    },
+    {
+      "name": "ink_recall",
+      "description": "按 id 读一条记忆的全文（含来源、写入与修订时间、被取用次数），并给它记一次取用。读完请基于正文回答或行动；如果发现正文过时或记错了，用 ink_amend 改，不要只在回执里纠正。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "条目 id，形如 mem_xxx；从 ink_search / ink_list / ink_remember 的回执里取。"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "read"
+      ],
+      "summary": {
+        "zh": "按 id 读一条记忆的全文，并记一次取用。",
+        "en": "Read one memory in full by id and count the recall."
+      }
+    },
+    {
+      "name": "ink_amend",
+      "description": "按 id 修订一条记忆：给哪个字段就改哪个，没给的保持原样；改完更新修订时间。正文整体替换，不做增量拼接。只改一个细节时也要把完整正文写进来。找不到 id 时先用 ink_search 确认。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "要改的条目 id。"
+          },
+          "text": {
+            "type": "string",
+            "description": "新的完整正文，1–2000 字。"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "fact",
+              "event",
+              "preference",
+              "todo",
+              "note"
+            ],
+            "description": "种类：fact 事实 / event 事件 / preference 偏好 / todo 待办 / note 杂记。缺省 note。"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "标签，用来分组与过滤：最多 12 个，每个 24 字以内，不用带 #。"
+          },
+          "source": {
+            "type": "string",
+            "description": "新的来源说明，80 字以内。"
+          },
+          "importance": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "description": "新的重要度 0–5。"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "是否置顶。"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "write"
+      ],
+      "summary": {
+        "zh": "按 id 修订一条记忆的正文、标签或重要度。",
+        "en": "Revise a memory by id: text, tags, kind or importance."
+      }
+    },
+    {
+      "name": "ink_forget",
+      "description": "按 id 处理一条不再需要的记忆：默认归档（还在存档里，默认检索看不到，ink_recall 仍能读）。只有配置 worlds.thepalestink.hardDeleteOnForget 为 true 时才接受 purge=true 做物理删除，删了不可恢复；配置没开时带 purge 会被拒绝，改调归档即可。给 reason 会写进归档记录。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "要处理的条目 id。"
+          },
+          "reason": {
+            "type": "string",
+            "description": "为什么不再需要它；会写进归档记录。"
+          },
+          "purge": {
+            "type": "boolean",
+            "description": "true = 物理删除（需配置允许）；缺省 false = 归档。"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "write"
+      ],
+      "summary": {
+        "zh": "按 id 归档一条记忆；配置允许时可真正删除。",
+        "en": "Archive a memory by id; purge it permanently only when config allows."
+      }
+    },
+    {
+      "name": "ink_list",
+      "description": "按最近修订倒序列出记忆，只给摘要行。用于「我最近记了什么」「某个人名下都有什么」这类浏览；要按内容找用 ink_search。可用 tag 与 kind 过滤，includeArchived 连归档一起列。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "列几条，缺省读配置 searchLimit（默认 8）。"
+          },
+          "tag": {
+            "type": "string",
+            "description": "只看带这个标签的条目（不分大小写）。"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "fact",
+              "event",
+              "preference",
+              "todo",
+              "note"
+            ],
+            "description": "种类：fact 事实 / event 事件 / preference 偏好 / todo 待办 / note 杂记。缺省 note。"
+          },
+          "includeArchived": {
+            "type": "boolean",
+            "description": "连归档一起列，缺省 false。"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "tags": [
+        "read",
+        "snapshot"
+      ],
+      "summary": {
+        "zh": "按时间倒序列出最近的记忆。",
+        "en": "List recent memories, newest first."
+      }
+    },
+    {
+      "name": "ink_stats",
+      "description": "报告记忆库的规模（未归档 / 归档 / 置顶）、种类分布、标签榜、被取用最多的条目、语义索引状态与存档文件路径。容量接近上限、怀疑存档损坏、想确认写没写进去或嵌入配置对不对时先看它。",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "tags": [
+        "read",
+        "snapshot"
+      ],
+      "summary": {
+        "zh": "报告记忆库的规模、种类分布与存档位置。",
+        "en": "Report the database size, kind breakdown and archive path."
+      }
+    }
+  ],
+  "events": [
+    {
+      "type": "ink.memory.loaded",
+      "description": {
+        "zh": "记忆库载入完成，报告条目数与置顶数。",
+        "en": "The memory database finished loading and reports its size."
+      },
+      "trigger": "preempt"
+    },
+    {
+      "type": "ink.memory.added",
+      "description": {
+        "zh": "写进了一条新记忆，带上 id、种类与标签。",
+        "en": "A new memory was written, with id, kind and tags."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "ink.memory.amended",
+      "description": {
+        "zh": "一条已有记忆被修订。",
+        "en": "An existing memory was revised."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "ink.memory.archived",
+      "description": {
+        "zh": "一条记忆被归档（不再参与默认检索，仍在存档里）。",
+        "en": "A memory was archived: out of default search, still on disk."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "ink.memory.purged",
+      "description": {
+        "zh": "一条记忆被物理删除，不可恢复。",
+        "en": "A memory was permanently deleted."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "ink.memory.recalled",
+      "description": {
+        "zh": "一条记忆被取用（ink_recall 读全文）。",
+        "en": "A memory was recalled in full."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "ink.memory.evicted",
+      "description": {
+        "zh": "容量到顶，最久没被取用的条目被挤进归档。",
+        "en": "Capacity reached; the least recently used entries were pushed into the archive."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "ink.store.recovered",
+      "description": {
+        "zh": "存档损坏，已改名备份并从空库继续。",
+        "en": "The archive was unreadable; it was renamed aside and the database started empty."
+      },
+      "trigger": "preempt"
+    },
+    {
+      "type": "ink.embed.ready",
+      "description": {
+        "zh": "嵌入模型连上了，语义检索可用（报模型与维度）。",
+        "en": "The embedding model answered; semantic search is available (reports model and dimensions)."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "ink.embed.failed",
+      "description": {
+        "zh": "嵌入调用失败，检索已退回字面匹配（报一句原因）。",
+        "en": "The embedding call failed; search fell back to literal matching (reports the reason)."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "ink.embed.reindexed",
+      "description": {
+        "zh": "向量重建完成（报补了几条、失败几条）。",
+        "en": "Vector backfill finished (reports how many were indexed and how many failed)."
+      },
+      "trigger": "flush"
+    }
+  ],
+  "prompts": [
+    {
+      "key": "worlds.thepalestink.envPrompt",
+      "title": "淡墨 · 环境提示词",
+      "role": "envPrompt",
+      "content": "你手边有一座「淡墨」记忆库：一份可以写、可以查、可以改的长期记忆，跨对话保留。\n\n现在：未归档 {{thepalestink.count}} 条，归档 {{thepalestink.archived}} 条，容量上限 {{thepalestink.maxEntries}} 条。\n常用标签：{{thepalestink.topTags}}。\n语义检索：{{thepalestink.semantic}}。\n\n## 什么时候写\n\n- 出现的**以后还会用到的事实**：人的名字与称呼、约定与截止时间、长期偏好、正在做的项目与它现在的状态。\n- 出现**决定与理由**：选了什么、为什么、放弃了什么。只记结论会让后来的人重复讨论。\n- 出现**纠正**：对方说「不是这样」「我改主意了」。先 ink_amend 改掉旧条目，再考虑要不要补一条新的；别让两条互相矛盾的记忆并存。\n- 不写：寒暄、临时的中间步骤、刚读过的原文（原文用引用或链接）、你猜的但没有确认的事。猜测要写就标明「推测」。\n\n## 怎么写\n\n- 一条一件事。正文写清「谁、什么时候、发生了什么、为什么重要」，别用「他」「那个」这类离开上下文就读不懂的指代。\n- 标签用稳定的名词（人名、项目、主题），方便以后按人按项目捞；同一件事不要每次都换标签写法。\n- 重要度 0–5：随手记 0–1，会反复用到 2–3，长期设定或不可再问到的 4–5。长期设定加 pinned。\n- 写之前先 ink_search 一次：已经记过就 ink_amend，别写重复条目。检索要换着词试（同义词、人名、项目名）。\n\n## 怎么读\n\n- 回答与「以前说过什么」有关的问题前，先 ink_search；拿到 id 觉得不够再 ink_recall 读全文。\n- 回执里的摘要行足够回答就别再读全文，省上下文。\n- 记忆可能过时：正文里的时间戳比你的印象可信。与当前对话冲突时，以当前对话为准，并 ink_amend 更新那条记忆。\n- 检索先给关键词；没找到就换同义词、减标签、放宽范围再说一次。语义检索开着时回执会标「含语义」「≈」，那说明是「意思近」而不是「字面中」，重要结论仍要用 ink_recall 核对原文。语义检索报「没连上」时按字面结果作答，不要反复重试。\n\n## 关于语义检索\n\n- 它是否开启、用哪个模型、限流多少，由**人类**在「淡墨」页的「嵌入」页签里配；你不要自己去改，也不要问对方要密钥——密钥只进部署的 `.env`。\n- 如果对方问「为什么搜不到」，先看回执里有没有「语义检索这次没连上」：有就是嵌入服务的问题，按字面检索解释即可。\n- 不要为了「让它更好搜」而把同一条记忆改写成很多条；语义检索靠的是向量，不是重复。\n\n## 边界\n\n- 不写密钥、令牌、密码、身份证号这类凭证；对方要你记，就说明你只能记「有这么个东西放在哪」，不记值本身。\n- 不写你没被允许保存的隐私；不确定就问一句。\n- ink_forget 默认只是归档，不是删除；对方说「忘掉」时先确认是「不想再被检索到」还是「彻底删掉」，彻底删要配置允许。\n- 条目上限 {{thepalestink.maxEntries}} 条，满了会淘汰最久没被取用的条目；重要设定请置顶，别把容量当无限。\n- 回执是给你的凭据，不是给对方看的正文；引用记忆时用自己的话复述，不要整段贴回执。\n"
+    }
+  ]
+}

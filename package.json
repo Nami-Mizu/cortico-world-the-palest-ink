@@ -1,0 +1,53 @@
+{
+  "name": "cortico-world-the-palest-ink",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "淡墨 · 记忆库：给 Agent 一个可以写下、检索、修订与归档的长期记忆数据库；可选接入嵌入模型做语义检索。",
+  "license": "MIT",
+  "keywords": [
+    "cortico-world",
+    "cortico",
+    "world",
+    "memory",
+    "database",
+    "semantic-search",
+    "embeddings"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.28.6",
+  "main": "./src/index.ts",
+  "cortico": {
+    "kind": "world",
+    "api": 6,
+    "displayName": "淡墨 · 记忆库",
+    "tags": [
+      "memory",
+      "experimental"
+    ],
+    "describe": "describe.json",
+    "webUiClient": "dist/webui.js"
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "describe.json"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.webui.json --noEmit",
+    "build:webui": "esbuild src/webui/client.ts --bundle --format=esm --target=es2022 --platform=browser --outfile=dist/webui.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "cortico": "^0.2.13",
+    "esbuild": "0.28.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "displayName": "淡墨 · 记忆库"
+}
