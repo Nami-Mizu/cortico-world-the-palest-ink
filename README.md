@@ -65,7 +65,7 @@
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | World 开关 |
+| `enabled` | `false` | World 开关；定义里恒为关，装好后到 World 页打开 |
 | `maxEntries` | `500` | 未归档条目上限（1–100000） |
 | `searchLimit` | `8` | `ink_search` / `ink_list` 的默认条数（1–50） |
 | `defaultImportance` | `2` | 写入时未给重要度用的默认值（0–5） |
@@ -134,6 +134,12 @@ node node_modules/esbuild/bin/esbuild src/webui/client.ts --bundle --format=esm 
 ```bash
 pnpm describe:extension <本包目录>
 pnpm check:extension <本包目录>
+```
+
+本机不装宿主依赖也能跑第②级（用宿主源码做干装载与 describe 比对）：
+
+```bash
+node node_modules/tsx/dist/cli.mjs _dev/host-check.ts
 ```
 
 ## 已知简化

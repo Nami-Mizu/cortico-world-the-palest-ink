@@ -61,7 +61,8 @@ export interface InkConfigSection {
 }
 
 export const INK_DEFAULTS: InkConfigSection = {
-  enabled: true,
+  // 定义里恒为 false：装不装、开不开由 bot 的声明与部署决定（宿主 dryMount 的约定）。
+  enabled: false,
   maxEntries: DEFAULT_MAX_ENTRIES,
   searchLimit: 8,
   defaultImportance: 2,
