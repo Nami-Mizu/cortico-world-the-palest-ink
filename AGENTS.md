@@ -30,7 +30,8 @@
 - 节奏相关的 11 个配置在第二个配置组 `INK_RHYTHM_CONFIG_GROUP`（id `world:thepalestink.rhythm`，owner 仍是 `world:thepalestink`；路径都落在 `worlds.thepalestink.` 下）。`webUi().config` 是 `[INK_CONFIG_GROUP, INK_RHYTHM_CONFIG_GROUP]` 两组一起给。
 - cron 解析在 `src/cron.ts` 是纯函数：`parseCron` 五段（分 时 日 月 周），支持 `*`/`?`/数字/`a-b`/`a,b`/`/n`，周日 `7` 折成 `0`；日与周同时限定时「满足其一」；`nextCronMatch` 逐分钟扫（最多 370 天）。**没有秒级、没有 `@daily` 别名、不处理夏令时**。
 - 调度器在 `world.start()` 里 `setInterval`（默认 30 秒，`unref` 掉，不吊住宿主），调 `tick()`；`tick()` 是公开的、`now` 可注入，测试别真等。同一分钟只推一次（key 是 `YYYY-MM-DDTHH:mm`）。
-- 三种提醒：`writeCron` 到点（`ink.reminder.schedule`）、上下文估算过 `contextReminderPercent`（`ink.reminder.context`，冷却 `contextReminderCooldownMinutes`）、`onHandoffEnded`（`ink.reminder.handoff`，`preempt`）。默认阈值是 **20**，不是 75：宿主（Coopanion）在窗口两成多就交接，上下文几乎到不了更高，调高等于永远不提醒。**宿主没有「交接开始前」钩子**，交接提醒只能落在交接后第一批；`onHandoffEnded` 同时把 `handoffCursor` 移到最新，重置估算。
+- 两种「写记忆」提醒：`writeCron` 到点（`ink.reminder.schedule`）、上下文估算过 `contextReminderPercent`（`ink.reminder.context`，冷却 `contextReminderCooldownMinutes`）。默认阈值是 **20**，不是 75：宿主（Coopanion）在窗口两成多就交接，上下文几乎到不了更高，调高等于永远不提醒。
+- 交接钩子**不催写**（交接前刚整理过），而是 `onHandoffEnded()` 推一条 `ink.handoff.briefing`（`preempt`）：从「待办」与「偏好」里各挑最多 3 条（`briefingEntries`：重要度 → 取用次数 → updatedAt），用 `entryLine` 拼成提要；两类都空就不发，免得空提要占上下文。同一钩子还会 `handoffCursor = store.latestCursor()` 并清零 `lastContextReminderAt`。开关是 `handoffBriefing`（原 `handoffReminder` 已废弃）。**宿主没有「交接开始前」钩子**，提要只能落在交接后第一批。
 - 上下文 token 是**估算**（`estimateTokens`：中日韩一字一 token、其余 3.6 字符一 token，向上取整），数据来自 `host.store.range({fromCursor})` 的事件文字，只取最后 2000 条；工具回执不在事件里，所以只会低估。别把它当宿主的精确用量。
 - 自动归档判定在 `src/maintenance.ts` 是纯函数 `planMaintenance(entries, settings, now)`，`world.runMaintenance()` 才落盘。两条规则：`importance <= autoArchiveImportance` 且按 `lastRecalledAt ?? updatedAt` 算 ≥ `autoArchiveAgeDays`（stale）；同 kind、Jaccard ≥ `conflictSimilarity` 的取较旧/较不重要者（conflict）。**置顶与重要度 5 永不自动归档**（`SACRED_IMPORTANCE = 5`）。
 - 自动归档只调 `store.archive()`（不 purge），所以归档后仍能 `ink_recall` 读到；容量淘汰、自动归档共用 `archiveReason` 字段，别混用。
@@ -89,10 +90,10 @@
 
 ## 验证到哪一级
 
-- 行为自检：`node _dev/verify.mjs` → **121 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、九个工具、时效与过期、情绪取回、事件、面板、热改、cron、上下文提醒、交接提醒、自动归档、星图布局、查重、静音、导入导出）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance/dedupe/transfer/starmap-layout 后先跑它。
+- 行为自检：`node _dev/verify.mjs` → **122 项全过**（落盘、坏档、容量、字面/语义检索、向量仓、嵌入分批与预算、九个工具、时效与过期、情绪取回、事件、面板、热改、cron、上下文提醒、交接提要、自动归档、星图布局、查重、静音、导入导出）。不依赖 pnpm，改 store/search/vector/embedding/world/cron/maintenance/dedupe/transfer/starmap-layout 后先跑它。
 - 类型检查：`tsc --noEmit`（主项目）与 `tsc -p tsconfig.webui.json --noEmit`（面板）**都通过，0 错误**。
 - 单元测试：`vitest run` → **122/122 通过**（`tests/world.test.ts` 34、`tests/dedupe.test.ts` 9、`tests/transfer.test.ts` 6、`tests/starmap-layout.test.ts` 10、`tests/search.test.ts` 16、`tests/cron.test.ts` 12、`tests/embedding.test.ts` 11、`tests/maintenance.test.ts` 15、`tests/vector.test.ts` 6）。
-- 面板构建：`dist/webui.js` **约 61.2kb（62,648 B）**，esbuild 无警告。
+- 面板构建：`dist/webui.js` **约 61.2kb（62,711 B）**，esbuild 无警告。
 - **`pnpm` 曾经静默挂住，已修**：`package.json` 里锁的 `packageManager: pnpm@11.28.6` 与本机 12.23.0 不一致，pnpm 10+ 会按字段去取旧版，取不到就无声卡死（`pnpm --version` 正常，因为它不读项目）。改成 `pnpm@12.23.0` 后 `pnpm install` / `pnpm typecheck` / `pnpm test` / `pnpm build:webui` 全部正常，`pnpm-lock.yaml` 已入库。**改这个字段前先看 `pnpm --version`。**
 - **不要用 PowerShell 文本管道写文件**：会话里有个防双重编码的插件，`Get-Content x | Set-Content x`、`Out-File`、`cat x > y`、`Tee-Object` 会被直接拒绝执行（看起来像「用户拒绝了命令」），就算跑通也可能把中文按 ANSI 写坏。读用 `read`、写用 `write`/`edit`；脚本里必须读写文件时用 `[IO.File]::ReadAllText` / `[IO.File]::WriteAllText` 配 `[Text.UTF8Encoding]::new($false)`。
 - `describe:extension` / `check:extension`：**已用宿主源码跑完第②级**——`node node_modules/tsx/dist/cli.mjs _dev/host-check.ts` 直接调宿主的 `dryMountWorld()` 与 `checkDescribe()`：9 个工具、6 个占位符、4 个面板、2 个配置组全部通过，`describe.json`（9 tools / 15 events / 1 prompt）与代码里的自描述逐字段一致。`check:extension` 本体没跑（它要宿主的依赖，本机没装）。

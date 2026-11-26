@@ -117,7 +117,7 @@ export interface PanelRhythm {
   estimatedTokens: number;
   contextWindow: number | null;
   estimatedPercent: number | null;
-  handoffReminder: boolean;
+  handoffBriefing: boolean;
   lastReminder: { kind: 'schedule' | 'context' | 'handoff'; at: string; text: string } | null;
   maintenance: {
     enabled: boolean;

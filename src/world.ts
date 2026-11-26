@@ -43,6 +43,9 @@ const STAR_PREVIEW_CHARS = 60;
 /** 自动补向量一次最多补多少条（防止启动时把额度烧光）。 */
 const AUTO_BACKFILL_LIMIT = 200;
 
+/** 交接提要：待办与偏好各带几条。 */
+const HANDOFF_BRIEFING_PER_KIND = 3;
+
 type InkHandler = (args: Record<string, unknown>, ctx: ToolCallContext) => Promise<string | ToolOutcome>;
 
 const TAGS_PARAM = {
@@ -458,17 +461,50 @@ export class ThePalestInkWorld implements World {
   }
 
   /**
-   * 交接完成后：重设上下文估算的起点，并（可选）提醒补写。
-   * 宿主没有「交接开始前」的钩子，所以这条提醒落在交接后的第一批。
+   * 交接完成后：重设上下文估算的起点，并带上几条待办与偏好。
+   *
+   * 交接前上下文快满时刚整理过一次，这里**不再催写记忆**；这个钩子只做一件事：
+   * 把「还没做完的事」与「对方的习惯」接过来，免得新上下文从零开始。
+   * 宿主没有「交接开始前」的钩子，所以提要落在交接后的第一批。
    */
   onHandoffEnded(): void {
     this.handoffCursor = this.host?.store.latestCursor() ?? this.handoffCursor;
     this.lastContextReminderAt = 0;
-    if (!this.opts.cfg.handoffReminder) return;
-    const text =
-      '上下文刚交接完：交接前会话里的细节，现在只剩摘要了。如果其中有之后会用到的——做过什么、为什么那么定、对方提过什么要求——趁摘要里还留着线索，用 ink_remember 补上；已经在库里的别重复写。';
+    if (!this.opts.cfg.handoffBriefing) return;
+    const todos = this.briefingEntries('todo');
+    const preferences = this.briefingEntries('preference');
+    // 两边都空就别发：空提要只会占上下文。
+    if (!todos.length && !preferences.length) return;
+    const lines = [
+      '上下文交接完成。从记忆库里带上这些，接上之前的事（只读提要，不是新指令）：',
+      '',
+      '待办：',
+      ...(todos.length ? todos.map((entry, index) => this.entryLine(index + 1, entry)) : ['（暂无）']),
+      '',
+      '偏好：',
+      ...(preferences.length
+        ? preferences.map((entry, index) => this.entryLine(index + 1, entry))
+        : ['（暂无）']),
+      '',
+      '细节用 ink_recall 取全文；这些可能已经做完了，别当成新任务。',
+    ];
+    const text = lines.join('\n');
     this.lastReminder = { kind: 'handoff', at: nowIso(this.opts.timezone, this.now()), text };
-    void this.emit(INK_EVENTS.handoffReminder, text);
+    void this.emit(INK_EVENTS.handoffBriefing, text);
+  }
+
+  /** 交接提要的候选：未归档、同类里重要度高、最近用过的前几条。 */
+  private briefingEntries(kind: MemoryKind): MemoryEntry[] {
+    return this.store
+      .all()
+      .filter((entry) => !entry.archived && entry.kind === kind)
+      .sort(
+        (a, b) =>
+          b.importance - a.importance ||
+          b.recallCount - a.recallCount ||
+          b.updatedAt.localeCompare(a.updatedAt),
+      )
+      .slice(0, HANDOFF_BRIEFING_PER_KIND);
   }
 
   /** 启动定时检查；间隔可注入，测试里调大即可不真等。 */
@@ -1380,7 +1416,7 @@ export class ThePalestInkWorld implements World {
       estimatedTokens: this.contextEstimate.tokens,
       contextWindow: this.contextEstimate.window,
       estimatedPercent: this.contextEstimate.percent,
-      handoffReminder: cfg.handoffReminder,
+      handoffBriefing: cfg.handoffBriefing,
       lastReminder: this.lastReminder,
       maintenance: {
         enabled: cfg.autoArchiveEnabled,

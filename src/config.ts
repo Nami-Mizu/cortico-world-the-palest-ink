@@ -74,8 +74,8 @@ export interface InkConfigSection {
   contextReminderPercent: number;
   /** 两次上下文提醒之间至少隔多少分钟。 */
   contextReminderCooldownMinutes: number;
-  /** 上下文交接完成后提醒补写。 */
-  handoffReminder: boolean;
+  /** 上下文交接完成后，带上几条待办与偏好，让接下来的对话接得上。 */
+  handoffBriefing: boolean;
 
   /** 是否自动归档低价值条目。 */
   autoArchiveEnabled: boolean;
@@ -125,7 +125,7 @@ export const INK_DEFAULTS: InkConfigSection = {
   writeCronNote: '',
   contextReminderPercent: 20,
   contextReminderCooldownMinutes: 60,
-  handoffReminder: true,
+  handoffBriefing: true,
 
   autoArchiveEnabled: true,
   autoArchiveAgeDays: 30,
@@ -354,10 +354,11 @@ export const INK_RHYTHM_CONFIG_GROUP: ConfigGroup = {
         maximum: 1440,
         'x-hot': true,
       },
-      'worlds.thepalestink.handoffReminder': {
+      'worlds.thepalestink.handoffBriefing': {
         type: 'boolean',
-        title: '交接后提醒补写',
-        description: '上下文交接完成后推一条「刚丢掉细节，有遗漏现在补」。宿主没有「交接前」的钩子，所以提醒落在交接后的第一批。',
+        title: '交接后带上待办与偏好',
+        description:
+          '上下文交接完成后，从「待办」与「偏好」两类记忆里各挑 3 条送进上下文，接上之前在做的事与对方的习惯。只读，不改取用计数。',
         'x-hot': true,
       },
 

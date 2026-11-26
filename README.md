@@ -13,7 +13,7 @@
 - 记错了可以按 id 修订；用不着了先归档、必要时才物理删除。
 - 可以给一条记忆标**有效期**（`expiresInDays`，按天）：到期不会被删，只是会在「整理记忆时间」被提醒一次，由模型决定续期还是归档。
 - 容量有上限（默认 500 条），满了淘汰**最久没被取用**的条目到归档区，置顶条目不淘汰。
-- 会挑时候提醒模型写：定时（cron，如 `30 7 * * *`）、上下文估算过阈值、上下文刚交接完。定时那次会顺带报「有几条已经过期」；提醒只是提示，不写也行。
+- 会挑时候提醒模型写：定时（cron，如 `30 7 * * *`）、上下文估算过阈值。定时那次会顺带报「有几条已经过期」；提醒只是提示，不写也行。交接后不催写，而是自动带上 3 条待办与 3 条偏好，接上前文。
 - 会自动归档两类记忆：久没被取用且重要度低的；两条内容几乎重复的（留较新/较重要的）。置顶与重要度 5 永不自动动。
 - 写入前会查重：几乎同一句的重复记忆会被拦下（给旧 id 与相似度），模型可以改旧的、加 `force` 硬写，或让 `merge` 模式直接并进旧条目。
 - 事件默认**静音**：模型自己的写入/取用/修订不发事件，只有载入、坏档恢复、提醒、嵌入、容量淘汰与自动整理的聚合回执会进时间线（配置 `eventLevel: normal` 可开回逐条）。
@@ -71,8 +71,8 @@
 
 ## 事件
 
-`ink.memory.loaded` / `added` / `amended` / `archived` / `purged` / `recalled` / `evicted` / `ink.store.recovered` / `ink.embed.ready` / `ink.embed.failed` / `ink.embed.reindexed` / `ink.reminder.schedule` / `ink.reminder.context` / `ink.reminder.handoff` / `ink.maintenance.swept`。
-载入、坏档恢复、交接提醒是 `preempt`，其余是 `flush`。
+`ink.memory.loaded` / `added` / `amended` / `archived` / `purged` / `recalled` / `evicted` / `ink.store.recovered` / `ink.embed.ready` / `ink.embed.failed` / `ink.embed.reindexed` / `ink.reminder.schedule` / `ink.reminder.context` / `ink.handoff.briefing` / `ink.maintenance.swept`。
+载入、坏档恢复、交接提要是 `preempt`，其余是 `flush`。
 
 默认 `eventLevel: quiet`：`added` / `amended` / `recalled` / `purged` / `archived` 不发（那是模型自己动作的回声），自动整理也只在**一轮结束时发一条** `ink.maintenance.swept`（归档几条、久未取用/内容重复各几条、最多 5 个样本 id）。`describe.json` 仍声明全部 15 个事件。
 
@@ -127,7 +127,7 @@
 | `writeCronNote` | `''`（空） | 定时提醒时附在后面的自定义提示，比如「重点回顾项目约定」 |
 | `contextReminderPercent` | `20` | 上下文估算到窗口的百分之几时提醒（0–95，0 = 关）；宿主约 20% 多就交接，所以默认 20 |
 | `contextReminderCooldownMinutes` | `60` | 两次上下文提醒之间至少隔多久（5–1440 分钟） |
-| `handoffReminder` | `true` | 上下文交接完成后提醒补写记忆 |
+| `handoffBriefing` | `true` | 交接完成后带上「待办」与「偏好」各 3 条提要（只读，不催写） |
 | `autoArchiveEnabled` | `true` | 自动归档总开关 |
 | `autoArchiveAgeDays` | `30` | 多少天没被取用算「久远」（1–3650） |
 | `autoArchiveImportance` | `1` | 重要度不高于几分才算「不重要」（0–4） |
@@ -135,7 +135,7 @@
 | `conflictSimilarity` | `0.82` | 重复判定阈值（0.5–0.99，Jaccard 相似度） |
 | `maintenanceIntervalMinutes` | `60` | 自动归档检查的间隔（5–1440 分钟） |
 
-提醒的三种时机：`writeCron` 到点；上下文**估算**过阈值；`onHandoffEnded`（交接完成后）。宿主没有「交接开始前」的钩子，所以交接提醒落在交接后的第一批。上下文 token 数是按交接以来事件文字估的（中日韩一字一 token、其余 3.6 字符一 token），只用于阈值，**不是**宿主的精确用量。
+提醒的两种时机：`writeCron` 到点；上下文**估算**过阈值。`onHandoffEnded` 不提醒写记忆（交接前刚整理过），而是从「待办」与「偏好」里各挑 3 条送进上下文，让接下来的对话接得上；库为空就不发。宿主没有「交接开始前」的钩子，所以提要落在交接后的第一批。上下文 token 数是按交接以来事件文字估的（中日韩一字一 token、其余 3.6 字符一 token），只用于阈值，**不是**宿主的精确用量。
 
 ## 存档
 
@@ -163,7 +163,7 @@
 pnpm typecheck                 # 主项目 + 面板两个 tsconfig
 pnpm test                      # vitest，122 个用例
 pnpm build:webui               # esbuild 打 dist/webui.js
-node _dev/verify.mjs           # 无依赖行为自检（121 项，不需要 pnpm）
+node _dev/verify.mjs           # 无依赖行为自检（122 项，不需要 pnpm）
 node _dev/gen-describe.mjs     # 重新生成 describe.json
 ```
 

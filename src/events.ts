@@ -22,7 +22,7 @@ export const INK_EVENTS = {
   reindexed: 'ink.embed.reindexed',
   scheduleReminder: 'ink.reminder.schedule',
   contextReminder: 'ink.reminder.context',
-  handoffReminder: 'ink.reminder.handoff',
+  handoffBriefing: 'ink.handoff.briefing',
 } as const;
 
 export type InkEventType = (typeof INK_EVENTS)[keyof typeof INK_EVENTS];
@@ -117,10 +117,10 @@ export const INK_EVENT_DECLS: readonly EventDescribe[] = [
     trigger: 'flush',
   },
   {
-    type: INK_EVENTS.handoffReminder,
+    type: INK_EVENTS.handoffBriefing,
     description: {
-      zh: '上下文刚完成交接，提醒模型补写交接中可能丢掉、但之后会用到的细节。',
-      en: 'Context handoff just finished; the model is reminded to write details that may have been lost.',
+      zh: '上下文交接完成；带上「待办」与「偏好」里各 3 条提要，让接下来的对话接得上（只读，不催写）。',
+      en: 'Context handoff finished; a short briefing of up to 3 todos and 3 preferences is carried over so the next conversation can pick up.',
     },
     trigger: 'preempt',
   },

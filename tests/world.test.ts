@@ -375,27 +375,56 @@ describe('淡墨 · 提醒与自动归档', () => {
     await world.stop();
   });
 
-  it('交接结束后提醒补写；关掉开关就不提醒', async () => {
+  it('交接结束后带上待办与偏好各最多 3 条；空库不发，可关', async () => {
     const ctx = fakeWorldContext(THE_PALEST_INK, { scratchDir });
     const world = new ThePalestInkWorld({
-      cfg: { ...INK_DEFAULTS, handoffReminder: true },
+      cfg: { ...INK_DEFAULTS, handoffBriefing: true },
       timezone: 'Asia/Shanghai',
       dataDir: ctx.dataDir,
     });
     const host = new FakeHost();
     await world.start(host);
+
+    // 空库：不发空提要（空提要只会占上下文）。
     world.onHandoffEnded();
-    expect(host.events.map((event) => event.type)).toContain('ink.reminder.handoff');
+    expect(host.events.filter((event) => event.type === 'ink.handoff.briefing')).toHaveLength(0);
+
+    const remember = tool(world, 'ink_remember');
+    await remember.handler({ text: '明天上午十点把对账单发给会计', kind: 'todo', importance: 5 }, CALL);
+    await remember.handler({ text: '周五之前订好下个月的机票', kind: 'todo', importance: 4 }, CALL);
+    await remember.handler({ text: '把阳台的灯泡换成暖光', kind: 'todo', importance: 3 }, CALL);
+    await remember.handler({ text: '给猫预约下周三的疫苗', kind: 'todo', importance: 2 }, CALL);
+    await remember.handler({ text: '对方喜欢先听结论，再看细节', kind: 'preference', importance: 4 }, CALL);
+    await remember.handler({ text: '对方不吃香菜', kind: 'preference', importance: 3 }, CALL);
+    await remember.handler({ text: '上周读完了《失控》的第三章', kind: 'note', importance: 5 }, CALL);
+
+    world.onHandoffEnded();
+    const briefings = host.events.filter((event) => event.type === 'ink.handoff.briefing');
+    expect(briefings).toHaveLength(1);
+    const text = String(briefings[0]?.text ?? '');
+    expect(text).toContain('待办：');
+    expect(text).toContain('偏好：');
+    // 各取 3 条，多的那条（重要度最低的）不进来。
+    expect(text).toContain('对账单');
+    expect(text).toContain('机票');
+    expect(text).toContain('灯泡');
+    expect(text).not.toContain('疫苗');
+    expect(text).toContain('结论');
+    expect(text).toContain('香菜');
+    // 非同类的记忆不进提要；也不再是「催补写」的文案。
+    expect(text).not.toContain('失控');
+    expect(text).not.toContain('用 ink_remember 补上');
 
     const off = new ThePalestInkWorld({
-      cfg: { ...INK_DEFAULTS, handoffReminder: false },
+      cfg: { ...INK_DEFAULTS, handoffBriefing: false },
       timezone: 'Asia/Shanghai',
       dataDir: join(scratchDir, 'off'),
     });
     const quiet = new FakeHost();
     await off.start(quiet);
+    await tool(off, 'ink_remember').handler({ text: '关掉开关时也不该有提要', kind: 'todo' }, CALL);
     off.onHandoffEnded();
-    expect(quiet.events.map((event) => event.type)).not.toContain('ink.reminder.handoff');
+    expect(quiet.events.map((event) => event.type)).not.toContain('ink.handoff.briefing');
     await world.stop();
     await off.stop();
   });

@@ -440,7 +440,7 @@ var panel2 = {
       lines.push(
         rhythm.contextPercentLimit ? `\u4E0A\u4E0B\u6587\u63D0\u9192\uFF1A\u4F30\u5230 ${rhythm.contextPercentLimit}% \u65F6\u63D0\u9192\uFF08\u73B0\u5728\u7EA6 ${rhythm.estimatedPercent ?? "\u2014"}%\uFF0C${rhythm.estimatedTokens} / ${rhythm.contextWindow ?? "\u672A\u77E5"} token\uFF0C\u7C97\u4F30\uFF09` : "\u4E0A\u4E0B\u6587\u63D0\u9192\uFF1A\u5173"
       );
-      lines.push(rhythm.handoffReminder ? "\u4EA4\u63A5\u540E\u63D0\u9192\u8865\u5199\uFF1A\u5F00" : "\u4EA4\u63A5\u540E\u63D0\u9192\u8865\u5199\uFF1A\u5173");
+      lines.push(rhythm.handoffBriefing ? "\u4EA4\u63A5\u540E\u5E26\u4E0A\u5F85\u529E\u4E0E\u504F\u597D\uFF1A\u5F00\uFF08\u5404 3 \u6761\uFF09" : "\u4EA4\u63A5\u540E\u5E26\u4E0A\u5F85\u529E\u4E0E\u504F\u597D\uFF1A\u5173");
       const m = rhythm.maintenance;
       if (!m.enabled) lines.push("\u81EA\u52A8\u5F52\u6863\uFF1A\u5173");
       else {

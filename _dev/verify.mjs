@@ -542,8 +542,12 @@ function tempDir() {
   await world.tick(new Date(at.getTime() + 2 * 60_000));
   check('上下文过阈值提醒', count('ink.reminder.context') === 1, String(count('ink.reminder.context')));
 
+  const byNameEarly = (name) => world.tools().find((tool) => tool.name === name);
+  await byNameEarly('ink_remember').handler({ text: '交接前记下的待办：把报价单发出去', kind: 'todo', importance: 4 }, {});
+  await byNameEarly('ink_remember').handler({ text: '对方喜欢先听结论', kind: 'preference', importance: 3 }, {});
   world.onHandoffEnded();
-  check('交接后提醒补写', count('ink.reminder.handoff') === 1, String(count('ink.reminder.handoff')));
+  check('交接后带上待办与偏好', count('ink.handoff.briefing') === 1, String(count('ink.handoff.briefing')));
+  check('交接提要含待办与偏好', String(events.filter((event) => event.type === 'ink.handoff.briefing')[0]?.text ?? '').includes('待办：'), '');
 
   const byName = (name) => world.tools().find((tool) => tool.name === name);
   await byName('ink_remember').handler({ text: '临时安排，很快会过时。', importance: 1 }, {});

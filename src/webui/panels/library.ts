@@ -148,7 +148,7 @@ const panel: WebUiPanel = {
           ? `上下文提醒：估到 ${rhythm.contextPercentLimit}% 时提醒（现在约 ${rhythm.estimatedPercent ?? '—'}%，${rhythm.estimatedTokens} / ${rhythm.contextWindow ?? '未知'} token，粗估）`
           : '上下文提醒：关',
       );
-      lines.push(rhythm.handoffReminder ? '交接后提醒补写：开' : '交接后提醒补写：关');
+      lines.push(rhythm.handoffBriefing ? '交接后带上待办与偏好：开（各 3 条）' : '交接后带上待办与偏好：关');
       const m = rhythm.maintenance;
       if (!m.enabled) lines.push('自动归档：关');
       else {
